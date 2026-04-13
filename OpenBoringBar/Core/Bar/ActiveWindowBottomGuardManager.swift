@@ -5,6 +5,7 @@ import OSLog
 final class ActiveWindowBottomGuardManager {
     private enum AccessibilityAttribute {
         static let focusedWindow = "AXFocusedWindow" as CFString
+        static let windows = "AXWindows" as CFString
         static let position = "AXPosition" as CFString
         static let size = "AXSize" as CFString
         static let minimized = "AXMinimized" as CFString
@@ -27,6 +28,7 @@ final class ActiveWindowBottomGuardManager {
     init() {
         log("init")
         startTimer()
+        adjustAllWindowsAtLaunchIfNeeded()
         adjustActiveWindowIfNeeded()
     }
 
@@ -70,49 +72,91 @@ final class ActiveWindowBottomGuardManager {
             return
         }
 
-        if isWindowMinimized(focusedWindow) {
-            log("skip: window minimized for pid=\(processID)")
+        _ = adjustWindowIfNeeded(focusedWindow, processID: processID, source: "active")
+    }
+
+    private func adjustAllWindowsAtLaunchIfNeeded() {
+        guard AXIsProcessTrusted() else {
+            log("startup bulk adjust skipped: AX not trusted")
             return
         }
 
-        if isWindowFullScreen(focusedWindow) {
-            log("skip: window fullscreen for pid=\(processID)")
-            return
+        let runningApps = NSWorkspace.shared.runningApplications.filter {
+            !$0.isTerminated &&
+            $0.activationPolicy == .regular &&
+            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
         }
 
-        guard let windowFrame = frame(of: focusedWindow) else {
-            log("skip: cannot read window frame for pid=\(processID)")
-            return
+        log("startup bulk adjust begin: appCount=\(runningApps.count)")
+
+        var totalWindowCount = 0
+        var totalAdjustedCount = 0
+
+        for app in runningApps {
+            let processID = app.processIdentifier
+            let appElement = AXUIElementCreateApplication(processID)
+            guard let windows = windows(from: appElement) else {
+                continue
+            }
+
+            totalWindowCount += windows.count
+            for window in windows {
+                if adjustWindowIfNeeded(window, processID: processID, source: "startup") {
+                    totalAdjustedCount += 1
+                }
+            }
+        }
+
+        log("startup bulk adjust done: windowCount=\(totalWindowCount), adjustedCount=\(totalAdjustedCount)")
+    }
+
+    @discardableResult
+    private func adjustWindowIfNeeded(_ window: AXUIElement, processID: pid_t, source: String) -> Bool {
+        if isWindowMinimized(window) {
+            log("[\(source)] skip: window minimized for pid=\(processID)")
+            return false
+        }
+
+        if isWindowFullScreen(window) {
+            log("[\(source)] skip: window fullscreen for pid=\(processID)")
+            return false
+        }
+
+        guard let windowFrame = frame(of: window) else {
+            log("[\(source)] skip: cannot read window frame for pid=\(processID)")
+            return false
         }
 
         guard let screen = screen(for: windowFrame) else {
-            log("skip: cannot match screen for frame=\(windowFrame.debugDescription)")
-            return
+            log("[\(source)] skip: cannot match screen for frame=\(windowFrame.debugDescription)")
+            return false
         }
 
         let requiredBottomY = screen.frame.maxY - BarLayoutConstants.panelHeight
         let currentSnapshot = ActiveProcessSnapshot(processID: processID, windowFrame: windowFrame)
-        log("check1: pid=\(processID), windowMaxY=\(windowFrame.maxY), requiredMaxY=\(requiredBottomY), screenMaxY=\(screen.frame.maxY)")
+        log("[\(source)] check: pid=\(processID), windowMaxY=\(windowFrame.maxY), requiredMaxY=\(requiredBottomY), screenMaxY=\(screen.frame.maxY)")
 
         guard windowFrame.maxY > requiredBottomY else {
-            log("no-op: window already above panel for pid=\(processID)")
+            log("[\(source)] no-op: window already above panel for pid=\(processID)")
             if currentSnapshot != lastSnapshot {
                 lastSnapshot = currentSnapshot
             }
-            return
+            return false
         }
 
         let targetHeight = max(1, requiredBottomY - windowFrame.origin.y)
         var adjustedFrame = windowFrame
         adjustedFrame.size.height = targetHeight
 
-        log("resize: pid=\(processID), topY=\(windowFrame.origin.y), bottomFrom=\(windowFrame.maxY), bottomTo=\(adjustedFrame.maxY), heightFrom=\(windowFrame.height), heightTo=\(adjustedFrame.height)")
-        if resizeKeepingTop(adjustedFrame, for: focusedWindow) {
-            log("resize success: pid=\(processID)")
+        log("[\(source)] resize: pid=\(processID), topY=\(windowFrame.origin.y), bottomFrom=\(windowFrame.maxY), bottomTo=\(adjustedFrame.maxY), heightFrom=\(windowFrame.height), heightTo=\(adjustedFrame.height)")
+        if resizeKeepingTop(adjustedFrame, for: window) {
+            log("[\(source)] resize success: pid=\(processID)")
             lastSnapshot = ActiveProcessSnapshot(processID: processID, windowFrame: adjustedFrame)
-        } else {
-            log("resize failed: pid=\(processID)")
+            return true
         }
+
+        log("[\(source)] resize failed: pid=\(processID)")
+        return false
     }
 
     private func focusedWindow(from appElement: AXUIElement) -> AXUIElement? {
@@ -131,6 +175,30 @@ final class ActiveWindowBottomGuardManager {
         }
 
         return unsafeBitCast(value, to: AXUIElement.self)
+    }
+
+    private func windows(from appElement: AXUIElement) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            appElement,
+            AccessibilityAttribute.windows,
+            &value
+        )
+
+        guard result == .success,
+              let value,
+              CFGetTypeID(value) == CFArrayGetTypeID() else {
+            log("AXWindows read failed, result=\(result.rawValue)")
+            return nil
+        }
+
+        let array = unsafeBitCast(value, to: NSArray.self)
+        return array.compactMap { item in
+            guard CFGetTypeID(item as CFTypeRef) == AXUIElementGetTypeID() else {
+                return nil
+            }
+            return unsafeBitCast(item as CFTypeRef, to: AXUIElement.self)
+        }
     }
 
     private func frame(of window: AXUIElement) -> CGRect? {
