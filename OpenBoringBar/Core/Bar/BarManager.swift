@@ -76,13 +76,55 @@ final class BarManager: ObservableObject {
     }
 
     func activate(processID: pid_t) {
-        guard let runningApp = NSRunningApplication(processIdentifier: processID) else {
+        guard let app = NSRunningApplication(processIdentifier: processID),
+              !app.isTerminated else {
             return
         }
 
-        runningApp.activate(options: [.activateAllWindows])
-        refreshDisplayStates()
+        _ = app.unhide()
+
+        let requestAccepted: Bool
+        if #available(macOS 14.0, *) {
+            // Clicks on our non-activating panel do not always make this app active.
+            // Become active first, then cooperatively yield to the target app.
+            NSApp.activate()
+            NSApp.yieldActivation(to: app)
+            requestAccepted = app.activate(from: .current, options: [.activateAllWindows])
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            requestAccepted = app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
+
+        if !requestAccepted {
+            reopen(app)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else {
+                return
+            }
+
+            if !app.isActive {
+                self.reopen(app)
+            }
+            self.refreshDisplayStates()
+        }
     }
+
+    private func reopen(_ app: NSRunningApplication) {
+        guard let bundleURL = app.bundleURL else {
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+
+        NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { [weak self] _, _ in
+            self?.refreshDisplayStates()
+        }
+    }
+
 
     private func refreshDisplayStates() {
         let screens = NSScreen.screens
