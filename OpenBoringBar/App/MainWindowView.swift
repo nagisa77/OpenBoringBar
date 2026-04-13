@@ -1,0 +1,95 @@
+import SwiftUI
+
+struct MainWindowView: View {
+    @EnvironmentObject private var barManager: BarManager
+
+    private let columns = [GridItem(.adaptive(minimum: 340), spacing: 16)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                header
+
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(Array(barManager.connectedDisplays.enumerated()), id: \.offset) { index, screen in
+                        DisplayCard(
+                            index: index + 1,
+                            screenFrame: screen.frame,
+                            apps: barManager.mockRunningApps,
+                            onSwitch: barManager.activate(appName:)
+                        )
+                    }
+                }
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(
+            LinearGradient(
+                colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("OpenBoringBar")
+                .font(.system(size: 36, weight: .bold))
+
+            Text("v1.0: 每个显示器底部都有 bar，展示运行应用并支持切换。")
+                .font(.system(size: 16))
+                .foregroundStyle(.secondary)
+
+            Text("当前检测到 \(barManager.connectedDisplays.count) 个显示器")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+private struct DisplayCard: View {
+    let index: Int
+    let screenFrame: CGRect
+    let apps: [String]
+    let onSwitch: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Display \(index)")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Text("\(Int(screenFrame.width)) x \(Int(screenFrame.height))")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(apps, id: \.self) { app in
+                    Button(action: { onSwitch(app) }) {
+                        Text(app)
+                            .font(.system(size: 12, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.white.opacity(0.9))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(0.75))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+        )
+    }
+}
