@@ -249,7 +249,7 @@ private struct DisplayBarAppPill: View {
                 DisplayBarAppIcon(processID: app.processID)
 
                 Text(app.name)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
             }
