@@ -169,14 +169,10 @@ private final class DisplayPanelController {
     }
 
     private func updateFrame(of panel: DisplayPanelWindow, in screen: NSScreen) {
-        let horizontalInset: CGFloat = 18
-        let verticalInset: CGFloat = 8
-        let panelHeight: CGFloat = 74
-        let maxPanelWidth: CGFloat = 1440
-        let minPanelWidth: CGFloat = 280
-        let width = max(minPanelWidth, min(screen.frame.width - horizontalInset * 2, maxPanelWidth))
-        let x = screen.frame.minX + (screen.frame.width - width) / 2
-        let y = screen.visibleFrame.minY + verticalInset
+        let panelHeight: CGFloat = 60
+        let width = screen.frame.width
+        let x = screen.frame.minX
+        let y = screen.frame.minY
         let frame = CGRect(x: x, y: y, width: width, height: panelHeight)
 
         if panel.frame != frame {
@@ -211,10 +207,10 @@ private struct DisplayBottomBarView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            Rectangle()
                 .fill(.ultraThinMaterial)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    Rectangle()
                         .stroke(Color.white.opacity(0.55), lineWidth: 1)
                 )
 
@@ -223,10 +219,10 @@ private struct DisplayBottomBarView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 10)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 5) {
                         ForEach(apps, id: \.self) { app in
                             DisplayBarAppPill(
                                 app: app,
@@ -234,14 +230,12 @@ private struct DisplayBottomBarView: View {
                             )
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 10)
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(1)
     }
 }
 
@@ -259,11 +253,11 @@ private struct DisplayBarAppPill: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(minWidth: 130, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(
                         app.isFrontmost
                             ? Color.white.opacity(0.72)
