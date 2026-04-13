@@ -31,6 +31,18 @@ final class ActiveWindowBottomGuardManager {
         let displayBounds: CGRect
     }
 
+    private struct PendingResizeRequest {
+        let frame: CGRect
+        let window: AXUIElement
+        let processID: pid_t
+        let source: String
+    }
+
+    private enum ResizeRequestResult {
+        case performed(success: Bool)
+        case queued
+    }
+
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.openboringbar.app",
         category: "ActiveWindowBottomGuard"
@@ -54,6 +66,10 @@ final class ActiveWindowBottomGuardManager {
     private var observerByPID: [pid_t: AXObserver] = [:]
     private var appElementByPID: [pid_t: AXUIElement] = [:]
     private var workspaceObservers: [NSObjectProtocol] = []
+    private let resizeThrottleInterval: TimeInterval = 1
+    private var lastResizeExecutionUptime: TimeInterval = -.infinity
+    private var pendingResizeRequest: PendingResizeRequest?
+    private var pendingResizeWorkItem: DispatchWorkItem?
 
     init() {
         log("init")
@@ -64,6 +80,9 @@ final class ActiveWindowBottomGuardManager {
     }
 
     deinit {
+        pendingResizeWorkItem?.cancel()
+        pendingResizeWorkItem = nil
+        pendingResizeRequest = nil
         teardownWorkspaceObservers()
         teardownAllAXObservers()
         log("deinit")
@@ -423,14 +442,135 @@ final class ActiveWindowBottomGuardManager {
         adjustedFrame.size.height = targetHeight
 
         log("[\(source)] resize: pid=\(processID), topY=\(windowFrame.origin.y), bottomFrom=\(windowFrame.maxY), bottomTo=\(adjustedFrame.maxY), heightFrom=\(windowFrame.height), heightTo=\(adjustedFrame.height)")
-        if resizeKeepingTop(adjustedFrame, for: window) {
-            log("[\(source)] resize success: pid=\(processID)")
-            lastSnapshot = ActiveProcessSnapshot(processID: processID, windowFrame: adjustedFrame)
+        switch resizeKeepingTop(
+            adjustedFrame,
+            for: window,
+            processID: processID,
+            source: source
+        ) {
+        case .performed(let success):
+            if success {
+                log("[\(source)] resize success: pid=\(processID)")
+                lastSnapshot = ActiveProcessSnapshot(processID: processID, windowFrame: adjustedFrame)
+                return true
+            }
+
+            log("[\(source)] resize failed: pid=\(processID)")
+            return false
+
+        case .queued:
+            log("[\(source)] resize throttled: trailing queued for pid=\(processID)")
+            return false
+        }
+    }
+
+    private func resizeKeepingTop(
+        _ frame: CGRect,
+        for window: AXUIElement,
+        processID: pid_t,
+        source: String
+    ) -> ResizeRequestResult {
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        let elapsed = nowUptime - lastResizeExecutionUptime
+
+        if elapsed < resizeThrottleInterval {
+            let remaining = max(0, resizeThrottleInterval - elapsed)
+            scheduleTrailingResize(
+                frame: frame,
+                for: window,
+                processID: processID,
+                source: source,
+                delay: remaining
+            )
+            return .queued
+        }
+
+        let success = performResizeKeepingTop(frame, for: window)
+        lastResizeExecutionUptime = nowUptime
+        return .performed(success: success)
+    }
+
+    private func scheduleTrailingResize(
+        frame: CGRect,
+        for window: AXUIElement,
+        processID: pid_t,
+        source: String,
+        delay: TimeInterval
+    ) {
+        pendingResizeRequest = PendingResizeRequest(
+            frame: frame,
+            window: window,
+            processID: processID,
+            source: source
+        )
+
+        if pendingResizeWorkItem != nil {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.pendingResizeWorkItem = nil
+
+            guard let request = self.pendingResizeRequest else {
+                return
+            }
+            self.pendingResizeRequest = nil
+
+            let success = self.performResizeKeepingTop(request.frame, for: request.window)
+            self.lastResizeExecutionUptime = ProcessInfo.processInfo.systemUptime
+
+            if success {
+                self.log("[\(request.source):trailing] resize success: pid=\(request.processID)")
+                self.lastSnapshot = ActiveProcessSnapshot(
+                    processID: request.processID,
+                    windowFrame: request.frame
+                )
+            } else {
+                self.log("[\(request.source):trailing] resize failed: pid=\(request.processID)")
+            }
+        }
+
+        pendingResizeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func performResizeKeepingTop(_ frame: CGRect, for window: AXUIElement) -> Bool {
+        var size = frame.size
+        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
+            log("AXValueCreate(CGSize) failed")
+            return false
+        }
+
+        let sizeResult = AXUIElementSetAttributeValue(
+            window,
+            AccessibilityAttribute.size,
+            sizeValue
+        )
+        if sizeResult != .success {
+            log("AXSize write failed, result=\(sizeResult.rawValue)")
+            return false
+        }
+
+        // Force-restore top-left anchor to avoid visual upward translation.
+        var position = frame.origin
+        guard let positionValue = AXValueCreate(.cgPoint, &position) else {
+            log("AXValueCreate(CGPoint) failed after size update")
             return true
         }
 
-        log("[\(source)] resize failed: pid=\(processID)")
-        return false
+        let positionResult = AXUIElementSetAttributeValue(
+            window,
+            AccessibilityAttribute.position,
+            positionValue
+        )
+        if positionResult != .success {
+            log("AXPosition restore failed, result=\(positionResult.rawValue)")
+        }
+
+        return true
     }
 
     private func focusedWindow(from appElement: AXUIElement) -> AXUIElement? {
@@ -481,42 +621,6 @@ final class ActiveWindowBottomGuardManager {
             return nil
         }
         return CGRect(origin: position, size: size)
-    }
-
-    private func resizeKeepingTop(_ frame: CGRect, for window: AXUIElement) -> Bool {
-        var size = frame.size
-        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
-            log("AXValueCreate(CGSize) failed")
-            return false
-        }
-
-        let sizeResult = AXUIElementSetAttributeValue(
-            window,
-            AccessibilityAttribute.size,
-            sizeValue
-        )
-        if sizeResult != .success {
-            log("AXSize write failed, result=\(sizeResult.rawValue)")
-            return false
-        }
-
-        // Force-restore top-left anchor to avoid visual upward translation.
-        var position = frame.origin
-        guard let positionValue = AXValueCreate(.cgPoint, &position) else {
-            log("AXValueCreate(CGPoint) failed after size update")
-            return true
-        }
-
-        let positionResult = AXUIElementSetAttributeValue(
-            window,
-            AccessibilityAttribute.position,
-            positionValue
-        )
-        if positionResult != .success {
-            log("AXPosition restore failed, result=\(positionResult.rawValue)")
-        }
-
-        return true
     }
 
     private func screenMatch(for windowFrame: CGRect) -> ScreenMatch? {
