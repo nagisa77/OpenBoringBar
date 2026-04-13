@@ -1,26 +1,9 @@
 import AppKit
 import ApplicationServices
+import Combine
 import OSLog
 
 final class ActiveWindowBottomGuardManager {
-    private enum AccessibilityAttribute {
-        static let focusedWindow = "AXFocusedWindow" as CFString
-        static let windows = "AXWindows" as CFString
-        static let position = "AXPosition" as CFString
-        static let size = "AXSize" as CFString
-        static let minimized = "AXMinimized" as CFString
-        static let fullScreen = "AXFullScreen" as CFString
-    }
-
-    private enum AccessibilityNotification {
-        static let focusedWindowChanged = "AXFocusedWindowChanged"
-        static let mainWindowChanged = "AXMainWindowChanged"
-        static let windowCreated = "AXWindowCreated"
-        static let moved = "AXMoved"
-        static let resized = "AXResized"
-        static let uiElementDestroyed = "AXUIElementDestroyed"
-    }
-
     private struct ActiveProcessSnapshot: Equatable {
         let processID: pid_t
         let windowFrame: CGRect
@@ -66,15 +49,17 @@ final class ActiveWindowBottomGuardManager {
     private var observerByPID: [pid_t: AXObserver] = [:]
     private var appElementByPID: [pid_t: AXUIElement] = [:]
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var eventCancellable: AnyCancellable?
     private let resizeThrottleInterval: TimeInterval = 1
     private var lastResizeExecutionUptime: TimeInterval = -.infinity
     private var pendingResizeRequest: PendingResizeRequest?
     private var pendingResizeWorkItem: DispatchWorkItem?
     private var delayedCapsuleSwitchAdjustWorkItem: DispatchWorkItem?
 
-    init() {
+    init(eventBus: AppEventBus) {
         log("init")
         configureWorkspaceObservers()
+        configureEventSubscriptions(eventBus: eventBus)
         installObserversForRunningApps()
         adjustAllWindowsAtLaunchIfNeeded()
         adjustActiveWindowIfNeeded()
@@ -86,9 +71,26 @@ final class ActiveWindowBottomGuardManager {
         pendingResizeWorkItem?.cancel()
         pendingResizeWorkItem = nil
         pendingResizeRequest = nil
+        eventCancellable?.cancel()
+        eventCancellable = nil
         teardownWorkspaceObservers()
         teardownAllAXObservers()
         log("deinit")
+    }
+
+    private func configureEventSubscriptions(eventBus: AppEventBus) {
+        eventCancellable = eventBus.events
+            .receive(on: RunLoop.main)
+            .sink { [weak self] event in
+                guard let self else {
+                    return
+                }
+
+                switch event {
+                case .capsuleAppSwitchConfirmed(let processID):
+                    self.scheduleDelayedAdjustAfterConfirmedSwitch(expectedProcessID: processID)
+                }
+            }
     }
 
     private func adjustActiveWindowIfNeeded(source: String = "active") {
@@ -107,7 +109,7 @@ final class ActiveWindowBottomGuardManager {
         }
 
         let appElement = AXUIElementCreateApplication(processID)
-        guard let focusedWindow = focusedWindow(from: appElement) else {
+        guard let focusedWindow = AXElementInspector.focusedWindow(from: appElement) else {
             log("skip: cannot resolve focused window for pid=\(processID)")
             return
         }
@@ -174,20 +176,6 @@ final class ActiveWindowBottomGuardManager {
                 }
 
                 self.removeObserver(for: app.processIdentifier)
-            },
-            NotificationCenter.default.addObserver(
-                forName: .barManagerDidConfirmCapsuleAppSwitch,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                guard let self,
-                      let processIDNumber = notification.userInfo?["processID"] as? NSNumber else {
-                    return
-                }
-
-                self.scheduleDelayedAdjustAfterConfirmedSwitch(
-                    expectedProcessID: pid_t(processIDNumber.int32Value)
-                )
             }
         ]
     }
@@ -276,19 +264,19 @@ final class ActiveWindowBottomGuardManager {
         processID: pid_t
     ) {
         registerNotification(
-            AccessibilityNotification.focusedWindowChanged,
+            AXNotificationName.focusedWindowChanged,
             observer: observer,
             element: appElement,
             processID: processID
         )
         registerNotification(
-            AccessibilityNotification.mainWindowChanged,
+            AXNotificationName.mainWindowChanged,
             observer: observer,
             element: appElement,
             processID: processID
         )
         registerNotification(
-            AccessibilityNotification.windowCreated,
+            AXNotificationName.windowCreated,
             observer: observer,
             element: appElement,
             processID: processID
@@ -298,25 +286,25 @@ final class ActiveWindowBottomGuardManager {
     private func registerWindowLevelNotifications(processID: pid_t) {
         guard let appElement = appElementByPID[processID],
               let observer = observerByPID[processID],
-              let windows = windows(from: appElement) else {
+              let windows = AXElementInspector.windows(from: appElement) else {
             return
         }
 
         for window in windows {
             registerNotification(
-                AccessibilityNotification.moved,
+                AXNotificationName.moved,
                 observer: observer,
                 element: window,
                 processID: processID
             )
             registerNotification(
-                AccessibilityNotification.resized,
+                AXNotificationName.resized,
                 observer: observer,
                 element: window,
                 processID: processID
             )
             registerNotification(
-                AccessibilityNotification.uiElementDestroyed,
+                AXNotificationName.uiElementDestroyed,
                 observer: observer,
                 element: window,
                 processID: processID
@@ -354,10 +342,10 @@ final class ActiveWindowBottomGuardManager {
         }
 
         switch notification {
-        case AccessibilityNotification.windowCreated:
+        case AXNotificationName.windowCreated:
             registerWindowLevelNotifications(processID: processID)
             if let appElement = appElementByPID[processID],
-               let focusedWindow = focusedWindow(from: appElement) {
+               let focusedWindow = AXElementInspector.focusedWindow(from: appElement) {
                 _ = adjustWindowIfNeeded(
                     focusedWindow,
                     processID: processID,
@@ -365,11 +353,11 @@ final class ActiveWindowBottomGuardManager {
                 )
             }
 
-        case AccessibilityNotification.focusedWindowChanged,
-             AccessibilityNotification.mainWindowChanged:
+        case AXNotificationName.focusedWindowChanged,
+             AXNotificationName.mainWindowChanged:
             registerWindowLevelNotifications(processID: processID)
             if let appElement = appElementByPID[processID],
-               let focusedWindow = focusedWindow(from: appElement) {
+               let focusedWindow = AXElementInspector.focusedWindow(from: appElement) {
                 _ = adjustWindowIfNeeded(
                     focusedWindow,
                     processID: processID,
@@ -377,15 +365,15 @@ final class ActiveWindowBottomGuardManager {
                 )
             }
 
-        case AccessibilityNotification.moved,
-             AccessibilityNotification.resized:
+        case AXNotificationName.moved,
+             AXNotificationName.resized:
             _ = adjustWindowIfNeeded(
                 element,
                 processID: processID,
                 source: "event:\(notification)"
             )
 
-        case AccessibilityNotification.uiElementDestroyed:
+        case AXNotificationName.uiElementDestroyed:
             break
 
         default:
@@ -426,7 +414,7 @@ final class ActiveWindowBottomGuardManager {
         for app in runningApps {
             let processID = app.processIdentifier
             let appElement = AXUIElementCreateApplication(processID)
-            guard let windows = windows(from: appElement) else {
+            guard let windows = AXElementInspector.windows(from: appElement) else {
                 continue
             }
 
@@ -443,17 +431,17 @@ final class ActiveWindowBottomGuardManager {
 
     @discardableResult
     private func adjustWindowIfNeeded(_ window: AXUIElement, processID: pid_t, source: String) -> Bool {
-        if isWindowMinimized(window) {
+        if AXElementInspector.isWindowMinimized(window) {
             log("[\(source)] skip: window minimized for pid=\(processID)")
             return false
         }
 
-        if isWindowFullScreen(window) {
+        if AXElementInspector.isWindowFullScreen(window) {
             log("[\(source)] skip: window fullscreen for pid=\(processID)")
             return false
         }
 
-        guard let windowFrame = frame(of: window) else {
+        guard let windowFrame = AXElementInspector.frame(of: window) else {
             log("[\(source)] skip: cannot read window frame for pid=\(processID)")
             return false
         }
@@ -584,7 +572,7 @@ final class ActiveWindowBottomGuardManager {
 
         let sizeResult = AXUIElementSetAttributeValue(
             window,
-            AccessibilityAttribute.size,
+            AXAttributeName.size,
             sizeValue
         )
         if sizeResult != .success {
@@ -601,7 +589,7 @@ final class ActiveWindowBottomGuardManager {
 
         let positionResult = AXUIElementSetAttributeValue(
             window,
-            AccessibilityAttribute.position,
+            AXAttributeName.position,
             positionValue
         )
         if positionResult != .success {
@@ -611,62 +599,12 @@ final class ActiveWindowBottomGuardManager {
         return true
     }
 
-    private func focusedWindow(from appElement: AXUIElement) -> AXUIElement? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            appElement,
-            AccessibilityAttribute.focusedWindow,
-            &value
-        )
-
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == AXUIElementGetTypeID() else {
-            log("AXFocusedWindow read failed, result=\(result.rawValue)")
-            return nil
-        }
-
-        return unsafeBitCast(value, to: AXUIElement.self)
-    }
-
-    private func windows(from appElement: AXUIElement) -> [AXUIElement]? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            appElement,
-            AccessibilityAttribute.windows,
-            &value
-        )
-
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == CFArrayGetTypeID() else {
-            log("AXWindows read failed, result=\(result.rawValue)")
-            return nil
-        }
-
-        let array = unsafeBitCast(value, to: NSArray.self)
-        return array.compactMap { item in
-            guard CFGetTypeID(item as CFTypeRef) == AXUIElementGetTypeID() else {
-                return nil
-            }
-            return unsafeBitCast(item as CFTypeRef, to: AXUIElement.self)
-        }
-    }
-
-    private func frame(of window: AXUIElement) -> CGRect? {
-        guard let position = pointAttributeValue(of: AccessibilityAttribute.position, from: window),
-              let size = sizeAttributeValue(of: AccessibilityAttribute.size, from: window) else {
-            return nil
-        }
-        return CGRect(origin: position, size: size)
-    }
-
     private func screenMatch(for windowFrame: CGRect) -> ScreenMatch? {
         var bestMatch: ScreenMatch?
         var maxIntersectionArea: CGFloat = 0
 
         for screen in NSScreen.screens {
-            guard let displayID = displayID(for: screen) else {
+            guard let displayID = screen.displayID else {
                 continue
             }
 
@@ -695,7 +633,7 @@ final class ActiveWindowBottomGuardManager {
         var minDistanceSquared = CGFloat.greatestFiniteMagnitude
 
         for screen in NSScreen.screens {
-            guard let displayID = displayID(for: screen) else {
+            guard let displayID = screen.displayID else {
                 continue
             }
 
@@ -717,88 +655,12 @@ final class ActiveWindowBottomGuardManager {
         return nearestMatch
     }
 
-    private func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
-        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-            return nil
-        }
-        return CGDirectDisplayID(number.uint32Value)
-    }
-
     private func squaredDistance(from point: CGPoint, to rect: CGRect) -> CGFloat {
         let clampedX = min(max(point.x, rect.minX), rect.maxX)
         let clampedY = min(max(point.y, rect.minY), rect.maxY)
         let dx = point.x - clampedX
         let dy = point.y - clampedY
         return dx * dx + dy * dy
-    }
-
-    private func isWindowMinimized(_ window: AXUIElement) -> Bool {
-        boolAttributeValue(of: AccessibilityAttribute.minimized, from: window) ?? false
-    }
-
-    private func isWindowFullScreen(_ window: AXUIElement) -> Bool {
-        boolAttributeValue(of: AccessibilityAttribute.fullScreen, from: window) ?? false
-    }
-
-    private func pointAttributeValue(of attribute: CFString, from element: AXUIElement) -> CGPoint? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == AXValueGetTypeID() else {
-            log("AX point read failed, attribute=\(attribute), result=\(result.rawValue)")
-            return nil
-        }
-
-        let axValue = unsafeBitCast(value, to: AXValue.self)
-        guard AXValueGetType(axValue) == .cgPoint else {
-            return nil
-        }
-
-        var point = CGPoint.zero
-        guard AXValueGetValue(axValue, .cgPoint, &point) else {
-            return nil
-        }
-
-        return point
-    }
-
-    private func sizeAttributeValue(of attribute: CFString, from element: AXUIElement) -> CGSize? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == AXValueGetTypeID() else {
-            log("AX size read failed, attribute=\(attribute), result=\(result.rawValue)")
-            return nil
-        }
-
-        let axValue = unsafeBitCast(value, to: AXValue.self)
-        guard AXValueGetType(axValue) == .cgSize else {
-            return nil
-        }
-
-        var size = CGSize.zero
-        guard AXValueGetValue(axValue, .cgSize, &size) else {
-            return nil
-        }
-
-        return size
-    }
-
-    private func boolAttributeValue(of attribute: CFString, from element: AXUIElement) -> Bool? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-
-        guard result == .success,
-              let number = value as? NSNumber else {
-            log("AX bool read failed, attribute=\(attribute), result=\(result.rawValue)")
-            return nil
-        }
-
-        return number.boolValue
     }
 
     private func log(_ message: String) {

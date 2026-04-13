@@ -3,8 +3,6 @@ import SwiftUI
 struct PermissionSetupView: View {
     @EnvironmentObject private var permissionManager: PermissionManager
 
-    private let refreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
-
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 20) {
@@ -29,9 +27,10 @@ struct PermissionSetupView: View {
         )
         .onAppear {
             permissionManager.refreshPermissions()
+            permissionManager.startAutoRefresh()
         }
-        .onReceive(refreshTimer) { _ in
-            permissionManager.refreshPermissions()
+        .onDisappear {
+            permissionManager.stopAutoRefresh()
         }
     }
 

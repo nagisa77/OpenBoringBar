@@ -2,41 +2,20 @@ import AppKit
 import ApplicationServices
 import Combine
 
-struct RunningAppItem: Identifiable, Hashable {
-    let processID: pid_t
-    let name: String
-    let isFrontmost: Bool
-
-    var id: pid_t { processID }
-}
-
-struct DisplayState: Identifiable {
-    let id: CGDirectDisplayID
-    let frame: CGRect
-    let apps: [RunningAppItem]
-}
-
 final class BarManager: ObservableObject {
-    private enum AccessibilityAttribute {
-        static let focusedWindow = "AXFocusedWindow" as CFString
-        static let windows = "AXWindows" as CFString
-        static let title = "AXTitle" as CFString
-        static let position = "AXPosition" as CFString
-        static let size = "AXSize" as CFString
-        static let minimized = "AXMinimized" as CFString
-    }
-
     @Published private(set) var displayStates: [DisplayState]
 
     private let appOrderManager: AppOrderManager
+    private let eventBus: AppEventBus
     private var displayObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol]
     private var refreshTimer: Timer?
 
-    init() {
-        displayStates = []
-        appOrderManager = AppOrderManager()
-        workspaceObservers = []
+    init(eventBus: AppEventBus) {
+        self.displayStates = []
+        self.appOrderManager = AppOrderManager()
+        self.eventBus = eventBus
+        self.workspaceObservers = []
 
         displayObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -81,9 +60,11 @@ final class BarManager: ObservableObject {
         if let displayObserver {
             NotificationCenter.default.removeObserver(displayObserver)
         }
+
         for observer in workspaceObservers {
             NotificationCenter.default.removeObserver(observer)
         }
+
         refreshTimer?.invalidate()
     }
 
@@ -92,6 +73,7 @@ final class BarManager: ObservableObject {
               !app.isTerminated else {
             return
         }
+
         let previousFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
 
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == processID,
@@ -133,11 +115,7 @@ final class BarManager: ObservableObject {
             _ = self.restoreFirstMinimizedWindowIfNoVisibleWindow(of: processID)
             let currentFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
             if previousFrontmostPID != processID, currentFrontmostPID == processID {
-                NotificationCenter.default.post(
-                    name: .barManagerDidConfirmCapsuleAppSwitch,
-                    object: self,
-                    userInfo: ["processID": NSNumber(value: processID)]
-                )
+                self.eventBus.post(.capsuleAppSwitchConfirmed(processID: processID))
             }
             self.refreshDisplayStates()
         }
@@ -149,23 +127,13 @@ final class BarManager: ObservableObject {
         }
 
         let appElement = AXUIElementCreateApplication(processID)
-        var value: CFTypeRef?
-        let focusedWindowResult = AXUIElementCopyAttributeValue(
-            appElement,
-            AccessibilityAttribute.focusedWindow,
-            &value
-        )
-
-        guard focusedWindowResult == .success,
-              let value,
-              CFGetTypeID(value) == AXUIElementGetTypeID() else {
+        guard let focusedWindow = AXElementInspector.focusedWindow(from: appElement) else {
             return false
         }
 
-        let focusedWindow = unsafeBitCast(value, to: AXUIElement.self)
         let minimizeResult = AXUIElementSetAttributeValue(
             focusedWindow,
-            AccessibilityAttribute.minimized,
+            AXAttributeName.minimized,
             kCFBooleanTrue
         )
         return minimizeResult == .success
@@ -185,10 +153,9 @@ final class BarManager: ObservableObject {
         }
     }
 
-
     private func refreshDisplayStates() {
         let screens = NSScreen.screens
-        let displayIDs = screens.compactMap(displayID(for:))
+        let displayIDs = screens.compactMap(\.displayID)
         appOrderManager.syncActiveDisplays(Set(displayIDs))
         let displayBoundsByID = Dictionary(uniqueKeysWithValues: displayIDs.map { ($0, CGDisplayBounds($0)) })
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -270,7 +237,7 @@ final class BarManager: ObservableObject {
 
         var nextDisplayStates: [DisplayState] = []
         for screen in screens {
-            guard let displayID = displayID(for: screen) else {
+            guard let displayID = screen.displayID else {
                 continue
             }
 
@@ -317,20 +284,20 @@ final class BarManager: ObservableObject {
             }
 
             let appElement = AXUIElementCreateApplication(processID)
-            guard let windows = windows(from: appElement),
+            guard let windows = AXElementInspector.windows(from: appElement),
                   !windows.isEmpty else {
                 continue
             }
 
             let appName = app.localizedName ?? "Unknown App"
             for window in windows {
-                guard isWindowMinimized(window),
-                      let windowFrame = frame(of: window),
+                guard AXElementInspector.isWindowMinimized(window),
+                      let windowFrame = AXElementInspector.frame(of: window),
                       !windowFrame.isEmpty else {
                     continue
                 }
 
-                let windowTitle = stringAttributeValue(of: AccessibilityAttribute.title, from: window)?
+                let windowTitle = AXElementInspector.stringAttributeValue(of: AXAttributeName.title, from: window)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let displayName = (windowTitle?.isEmpty == false) ? windowTitle! : appName
 
@@ -359,7 +326,7 @@ final class BarManager: ObservableObject {
 
         let result = AXUIElementSetAttributeValue(
             window,
-            AccessibilityAttribute.minimized,
+            AXAttributeName.minimized,
             kCFBooleanFalse
         )
         return result == .success
@@ -367,10 +334,11 @@ final class BarManager: ObservableObject {
 
     private func firstMinimizedWindow(of processID: pid_t) -> AXUIElement? {
         let appElement = AXUIElementCreateApplication(processID)
-        guard let windows = windows(from: appElement) else {
+        guard let windows = AXElementInspector.windows(from: appElement) else {
             return nil
         }
-        return windows.first(where: isWindowMinimized)
+
+        return windows.first(where: AXElementInspector.isWindowMinimized)
     }
 
     private func hasVisibleLayerZeroWindow(of processID: pid_t) -> Bool {
@@ -406,118 +374,6 @@ final class BarManager: ObservableObject {
 
         return false
     }
-
-    private func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
-        guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-            return nil
-        }
-        return CGDirectDisplayID(screenNumber.uint32Value)
-    }
-
-    private func windows(from appElement: AXUIElement) -> [AXUIElement]? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            appElement,
-            AccessibilityAttribute.windows,
-            &value
-        )
-
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == CFArrayGetTypeID() else {
-            return nil
-        }
-
-        let array = unsafeBitCast(value, to: NSArray.self)
-        return array.compactMap { item in
-            guard CFGetTypeID(item as CFTypeRef) == AXUIElementGetTypeID() else {
-                return nil
-            }
-            return unsafeBitCast(item as CFTypeRef, to: AXUIElement.self)
-        }
-    }
-
-    private func frame(of window: AXUIElement) -> CGRect? {
-        guard let position = pointAttributeValue(of: AccessibilityAttribute.position, from: window),
-              let size = sizeAttributeValue(of: AccessibilityAttribute.size, from: window) else {
-            return nil
-        }
-        return CGRect(origin: position, size: size)
-    }
-
-    private func isWindowMinimized(_ window: AXUIElement) -> Bool {
-        boolAttributeValue(of: AccessibilityAttribute.minimized, from: window) ?? false
-    }
-
-    private func pointAttributeValue(of attribute: CFString, from element: AXUIElement) -> CGPoint? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == AXValueGetTypeID() else {
-            return nil
-        }
-
-        let axValue = unsafeBitCast(value, to: AXValue.self)
-        guard AXValueGetType(axValue) == .cgPoint else {
-            return nil
-        }
-
-        var point = CGPoint.zero
-        guard AXValueGetValue(axValue, .cgPoint, &point) else {
-            return nil
-        }
-        return point
-    }
-
-    private func sizeAttributeValue(of attribute: CFString, from element: AXUIElement) -> CGSize? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == AXValueGetTypeID() else {
-            return nil
-        }
-
-        let axValue = unsafeBitCast(value, to: AXValue.self)
-        guard AXValueGetType(axValue) == .cgSize else {
-            return nil
-        }
-
-        var size = CGSize.zero
-        guard AXValueGetValue(axValue, .cgSize, &size) else {
-            return nil
-        }
-        return size
-    }
-
-    private func boolAttributeValue(of attribute: CFString, from element: AXUIElement) -> Bool? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-
-        guard result == .success,
-              let number = value as? NSNumber else {
-            return nil
-        }
-        return number.boolValue
-    }
-
-    private func stringAttributeValue(of attribute: CFString, from element: AXUIElement) -> String? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-
-        guard result == .success,
-              let string = value as? String else {
-            return nil
-        }
-        return string
-    }
-}
-
-extension Notification.Name {
-    static let barManagerDidConfirmCapsuleAppSwitch = Notification.Name("BarManager.didConfirmCapsuleAppSwitch")
 }
 
 private struct AppSnapshot {

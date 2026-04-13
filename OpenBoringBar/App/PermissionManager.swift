@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Combine
 import CoreGraphics
 import Foundation
 
@@ -9,6 +10,7 @@ final class PermissionManager: ObservableObject {
     @Published private(set) var setupCompleted = false
 
     private let setupRequiredAtLaunch: Bool
+    private var autoRefreshCancellable: AnyCancellable?
 
     var allGranted: Bool {
         accessibilityGranted && screenRecordingGranted
@@ -29,6 +31,10 @@ final class PermissionManager: ObservableObject {
         setupCompleted = !requiresSetup
     }
 
+    deinit {
+        stopAutoRefresh()
+    }
+
     func refreshPermissions() {
         accessibilityGranted = AXIsProcessTrusted()
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
@@ -46,6 +52,23 @@ final class PermissionManager: ObservableObject {
     func requestScreenRecordingAccess() {
         _ = CGRequestScreenCaptureAccess()
         scheduleRefresh()
+    }
+
+    func startAutoRefresh() {
+        guard autoRefreshCancellable == nil else {
+            return
+        }
+
+        autoRefreshCancellable = Timer.publish(every: 1.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.refreshPermissions()
+            }
+    }
+
+    func stopAutoRefresh() {
+        autoRefreshCancellable?.cancel()
+        autoRefreshCancellable = nil
     }
 
     func openAccessibilitySettings() {
