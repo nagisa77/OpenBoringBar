@@ -26,6 +26,11 @@ final class ActiveWindowBottomGuardManager {
         let windowFrame: CGRect
     }
 
+    private struct ScreenMatch {
+        let displayID: CGDirectDisplayID
+        let displayBounds: CGRect
+    }
+
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.openboringbar.app",
         category: "ActiveWindowBottomGuard"
@@ -396,14 +401,14 @@ final class ActiveWindowBottomGuardManager {
             return false
         }
 
-        guard let screen = screen(for: windowFrame) else {
+        guard let screenMatch = screenMatch(for: windowFrame) else {
             log("[\(source)] skip: cannot match screen for frame=\(windowFrame.debugDescription)")
             return false
         }
 
-        let requiredBottomY = screen.frame.maxY - BarLayoutConstants.panelHeight
+        let requiredBottomY = screenMatch.displayBounds.maxY - BarLayoutConstants.panelHeight
         let currentSnapshot = ActiveProcessSnapshot(processID: processID, windowFrame: windowFrame)
-        log("[\(source)] check: pid=\(processID), windowMaxY=\(windowFrame.maxY), requiredMaxY=\(requiredBottomY), screenMaxY=\(screen.frame.maxY)")
+        log("[\(source)] check: pid=\(processID), displayID=\(screenMatch.displayID), windowMaxY=\(windowFrame.maxY), requiredMaxY=\(requiredBottomY), screenMaxY=\(screenMatch.displayBounds.maxY)")
 
         guard windowFrame.maxY > requiredBottomY else {
             log("[\(source)] no-op: window already above panel for pid=\(processID)")
@@ -514,12 +519,17 @@ final class ActiveWindowBottomGuardManager {
         return true
     }
 
-    private func screen(for windowFrame: CGRect) -> NSScreen? {
-        var bestScreen: NSScreen?
+    private func screenMatch(for windowFrame: CGRect) -> ScreenMatch? {
+        var bestMatch: ScreenMatch?
         var maxIntersectionArea: CGFloat = 0
 
         for screen in NSScreen.screens {
-            let intersection = screen.frame.intersection(windowFrame)
+            guard let displayID = displayID(for: screen) else {
+                continue
+            }
+
+            let displayBounds = CGDisplayBounds(displayID)
+            let intersection = displayBounds.intersection(windowFrame)
             guard !intersection.isNull, !intersection.isEmpty else {
                 continue
             }
@@ -527,11 +537,57 @@ final class ActiveWindowBottomGuardManager {
             let area = intersection.width * intersection.height
             if area > maxIntersectionArea {
                 maxIntersectionArea = area
-                bestScreen = screen
+                bestMatch = ScreenMatch(
+                    displayID: displayID,
+                    displayBounds: displayBounds
+                )
             }
         }
 
-        return bestScreen
+        if let bestMatch {
+            return bestMatch
+        }
+
+        let center = CGPoint(x: windowFrame.midX, y: windowFrame.midY)
+        var nearestMatch: ScreenMatch?
+        var minDistanceSquared = CGFloat.greatestFiniteMagnitude
+
+        for screen in NSScreen.screens {
+            guard let displayID = displayID(for: screen) else {
+                continue
+            }
+
+            let displayBounds = CGDisplayBounds(displayID)
+            let distanceSquared = squaredDistance(from: center, to: displayBounds)
+            if distanceSquared < minDistanceSquared {
+                minDistanceSquared = distanceSquared
+                nearestMatch = ScreenMatch(
+                    displayID: displayID,
+                    displayBounds: displayBounds
+                )
+            }
+        }
+
+        if let nearestMatch {
+            log("fallback: matched nearest screen displayID=\(nearestMatch.displayID), frame=\(windowFrame.debugDescription), distanceSquared=\(minDistanceSquared)")
+        }
+
+        return nearestMatch
+    }
+
+    private func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+        return CGDirectDisplayID(number.uint32Value)
+    }
+
+    private func squaredDistance(from point: CGPoint, to rect: CGRect) -> CGFloat {
+        let clampedX = min(max(point.x, rect.minX), rect.maxX)
+        let clampedY = min(max(point.y, rect.minY), rect.maxY)
+        let dx = point.x - clampedX
+        let dy = point.y - clampedY
+        return dx * dx + dy * dy
     }
 
     private func isWindowMinimized(_ window: AXUIElement) -> Bool {
