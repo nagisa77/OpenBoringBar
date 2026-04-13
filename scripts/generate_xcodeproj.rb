@@ -24,7 +24,8 @@ module OpenBoringBarProjectGenerator
         target = project.new_target(:application, PROJECT_NAME, :osx, '14.0')
 
         source_files.each do |relative_path|
-            file_ref = project.main_group.new_file(relative_path)
+            group = group_for_file_path(project.main_group, relative_path)
+            file_ref = group.new_file(File.basename(relative_path))
             target.add_file_references([file_ref])
         end
 
@@ -49,6 +50,18 @@ module OpenBoringBarProjectGenerator
             .select { |path| File.file?(path) }
             .sort
             .map { |path| Pathname.new(path).relative_path_from(Pathname.new(ROOT_PATH)).to_s }
+    end
+
+    def group_for_file_path(root_group, relative_path)
+        directory = File.dirname(relative_path)
+        return root_group if directory == '.'
+
+        directory
+            .split(File::SEPARATOR)
+            .reduce(root_group) do |parent_group, path_component|
+                parent_group.groups.find { |group| group.display_name == path_component } ||
+                    parent_group.new_group(path_component, path_component)
+            end
     end
 end
 
