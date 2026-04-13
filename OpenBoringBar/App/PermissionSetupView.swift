@@ -6,16 +6,19 @@ struct PermissionSetupView: View {
     private let refreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            header
-            requiredIntro
-            permissionCard
-            notesSection
-            Spacer(minLength: 8)
-            footer
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 20) {
+                header
+                requiredIntro
+                permissionCard
+                notesSection
+                footer
+            }
+            .multilineTextAlignment(.leading)
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .multilineTextAlignment(.leading)
-        .padding(24)
+        .scrollBounceBehavior(.basedOnSize)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             LinearGradient(

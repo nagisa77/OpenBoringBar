@@ -7,6 +7,8 @@ struct OpenBoringBarApp: App {
     @StateObject private var permissionManager = PermissionManager()
     @State private var barManager: BarManager?
     @State private var displayPanelController: DisplayPanelController?
+    private let setupMinHeight: CGFloat = 760
+    private let runtimeMinHeight: CGFloat = 540
 
     var body: some Scene {
         WindowGroup {
@@ -33,7 +35,7 @@ struct OpenBoringBarApp: App {
                     startBarManagerIfNeeded()
                 }
             }
-            .frame(minWidth: 920, minHeight: 540)
+            .frame(minWidth: 920, minHeight: permissionManager.shouldPresentSetup ? setupMinHeight : runtimeMinHeight)
         }
     }
 
@@ -240,6 +242,8 @@ private struct DisplayBottomBarView: View {
 }
 
 private struct DisplayBarAppPill: View {
+    private static let appNameMaxWidth: CGFloat = 140
+
     let app: RunningAppItem
     let onSwitch: (pid_t) -> Void
 
@@ -252,6 +256,8 @@ private struct DisplayBarAppPill: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: Self.appNameMaxWidth, alignment: .leading)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
