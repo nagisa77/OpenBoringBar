@@ -7,6 +7,7 @@ struct OpenBoringBarApp: App {
     @StateObject private var permissionManager = PermissionManager()
     @State private var barManager: BarManager?
     @State private var displayPanelController: DisplayPanelController?
+    @State private var activeWindowBottomGuardManager: ActiveWindowBottomGuardManager?
     private let setupMinHeight: CGFloat = 760
     private let runtimeMinHeight: CGFloat = 540
 
@@ -46,20 +47,21 @@ struct OpenBoringBarApp: App {
     }
 
     private func startPanelsIfNeeded(with manager: BarManager) {
-        guard displayPanelController == nil else {
-            return
+        if displayPanelController == nil {
+            let controller = DisplayPanelController(barManager: manager)
+            controller.start()
+            displayPanelController = controller
+
+            closeHostWindowsKeepingPanels()
         }
 
-        let controller = DisplayPanelController(barManager: manager)
-        controller.start()
-        displayPanelController = controller
-
-        closeHostWindowsKeepingPanels()
+        startActiveWindowBottomGuardIfNeeded()
     }
 
     private func stopPanelsAndReset() {
         displayPanelController?.stop()
         displayPanelController = nil
+        activeWindowBottomGuardManager = nil
         barManager = nil
     }
 
@@ -69,6 +71,12 @@ struct OpenBoringBarApp: App {
                 window.orderOut(nil)
                 window.close()
             }
+        }
+    }
+
+    private func startActiveWindowBottomGuardIfNeeded() {
+        if activeWindowBottomGuardManager == nil {
+            activeWindowBottomGuardManager = ActiveWindowBottomGuardManager()
         }
     }
 }
@@ -171,11 +179,10 @@ private final class DisplayPanelController {
     }
 
     private func updateFrame(of panel: DisplayPanelWindow, in screen: NSScreen) {
-        let panelHeight: CGFloat = 44
         let width = screen.frame.width
         let x = screen.frame.minX
         let y = screen.frame.minY
-        let frame = CGRect(x: x, y: y, width: width, height: panelHeight)
+        let frame = CGRect(x: x, y: y, width: width, height: BarLayoutConstants.panelHeight)
 
         if panel.frame != frame {
             panel.setFrame(frame, display: true)
