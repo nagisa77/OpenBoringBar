@@ -102,19 +102,16 @@ final class ActiveWindowBottomGuardManager {
             return
         }
 
+        let targetHeight = max(1, requiredBottomY - windowFrame.origin.y)
         var adjustedFrame = windowFrame
-        let offset = adjustedFrame.origin.y - (requiredBottomY - adjustedFrame.height)
-        log("offset=\(offset)")
+        adjustedFrame.size.height = targetHeight
 
-        adjustedFrame.origin.y = requiredBottomY - adjustedFrame.height
-        adjustedFrame.size.height = adjustedFrame.height - offset
-      
-        log("move: pid=\(processID), fromY=\(windowFrame.minY), toY=\(adjustedFrame.minY)")
-        if setFrame(adjustedFrame, for: focusedWindow) {
-            log("move success: pid=\(processID)")
+        log("resize: pid=\(processID), topY=\(windowFrame.origin.y), bottomFrom=\(windowFrame.maxY), bottomTo=\(adjustedFrame.maxY), heightFrom=\(windowFrame.height), heightTo=\(adjustedFrame.height)")
+        if resizeKeepingTop(adjustedFrame, for: focusedWindow) {
+            log("resize success: pid=\(processID)")
             lastSnapshot = ActiveProcessSnapshot(processID: processID, windowFrame: adjustedFrame)
         } else {
-            log("move failed: pid=\(processID)")
+            log("resize failed: pid=\(processID)")
         }
     }
 
@@ -144,22 +141,40 @@ final class ActiveWindowBottomGuardManager {
         return CGRect(origin: position, size: size)
     }
 
-    private func setFrame(_ frame: CGRect, for window: AXUIElement) -> Bool {
-        var position = frame.origin
-        guard let positionValue = AXValueCreate(.cgPoint, &position) else {
-            log("AXValueCreate(CGPoint) failed")
+    private func resizeKeepingTop(_ frame: CGRect, for window: AXUIElement) -> Bool {
+        var size = frame.size
+        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
+            log("AXValueCreate(CGSize) failed")
             return false
         }
 
-        let result = AXUIElementSetAttributeValue(
+        let sizeResult = AXUIElementSetAttributeValue(
+            window,
+            AccessibilityAttribute.size,
+            sizeValue
+        )
+        if sizeResult != .success {
+            log("AXSize write failed, result=\(sizeResult.rawValue)")
+            return false
+        }
+
+        // Force-restore top-left anchor to avoid visual upward translation.
+        var position = frame.origin
+        guard let positionValue = AXValueCreate(.cgPoint, &position) else {
+            log("AXValueCreate(CGPoint) failed after size update")
+            return true
+        }
+
+        let positionResult = AXUIElementSetAttributeValue(
             window,
             AccessibilityAttribute.position,
             positionValue
         )
-        if result != .success {
-            log("AXPosition write failed, result=\(result.rawValue)")
+        if positionResult != .success {
+            log("AXPosition restore failed, result=\(positionResult.rawValue)")
         }
-        return result == .success
+
+        return true
     }
 
     private func screen(for windowFrame: CGRect) -> NSScreen? {
