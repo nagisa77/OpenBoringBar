@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Combine
 
 struct RunningAppItem: Identifiable, Hashable {
@@ -16,6 +17,15 @@ struct DisplayState: Identifiable {
 }
 
 final class BarManager: ObservableObject {
+    private enum AccessibilityAttribute {
+        static let focusedWindow = "AXFocusedWindow" as CFString
+        static let windows = "AXWindows" as CFString
+        static let title = "AXTitle" as CFString
+        static let position = "AXPosition" as CFString
+        static let size = "AXSize" as CFString
+        static let minimized = "AXMinimized" as CFString
+    }
+
     @Published private(set) var displayStates: [DisplayState]
 
     private let appOrderManager: AppOrderManager
@@ -83,7 +93,16 @@ final class BarManager: ObservableObject {
             return
         }
 
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == processID,
+           minimizeFocusedWindow(of: processID) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                self?.refreshDisplayStates()
+            }
+            return
+        }
+
         _ = app.unhide()
+        _ = restoreFirstMinimizedWindowIfNoVisibleWindow(of: processID)
 
         let requestAccepted: Bool
         if #available(macOS 14.0, *) {
@@ -109,8 +128,38 @@ final class BarManager: ObservableObject {
             if !app.isActive {
                 self.reopen(app)
             }
+
+            _ = self.restoreFirstMinimizedWindowIfNoVisibleWindow(of: processID)
             self.refreshDisplayStates()
         }
+    }
+
+    private func minimizeFocusedWindow(of processID: pid_t) -> Bool {
+        guard AXIsProcessTrusted() else {
+            return false
+        }
+
+        let appElement = AXUIElementCreateApplication(processID)
+        var value: CFTypeRef?
+        let focusedWindowResult = AXUIElementCopyAttributeValue(
+            appElement,
+            AccessibilityAttribute.focusedWindow,
+            &value
+        )
+
+        guard focusedWindowResult == .success,
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            return false
+        }
+
+        let focusedWindow = unsafeBitCast(value, to: AXUIElement.self)
+        let minimizeResult = AXUIElementSetAttributeValue(
+            focusedWindow,
+            AccessibilityAttribute.minimized,
+            kCFBooleanTrue
+        )
+        return minimizeResult == .success
     }
 
     private func reopen(_ app: NSRunningApplication) {
@@ -197,6 +246,13 @@ final class BarManager: ObservableObject {
             }
         }
 
+        appendMinimizedApps(
+            appsByDisplay: &appsByDisplay,
+            seenByDisplay: &seenByDisplay,
+            displayIDs: displayIDs,
+            displayBoundsByID: displayBoundsByID
+        )
+
         if frontmostDisplayID == nil, let frontmostPID {
             frontmostDisplayID = displayIDs.first { displayID in
                 appsByDisplay[displayID, default: []].contains(where: { $0.processID == frontmostPID })
@@ -234,11 +290,220 @@ final class BarManager: ObservableObject {
         displayStates = nextDisplayStates
     }
 
+    private func appendMinimizedApps(
+        appsByDisplay: inout [CGDirectDisplayID: [AppSnapshot]],
+        seenByDisplay: inout [CGDirectDisplayID: Set<pid_t>],
+        displayIDs: [CGDirectDisplayID],
+        displayBoundsByID: [CGDirectDisplayID: CGRect]
+    ) {
+        guard AXIsProcessTrusted() else {
+            return
+        }
+
+        for app in NSWorkspace.shared.runningApplications {
+            let processID = app.processIdentifier
+            guard !app.isTerminated,
+                  app.activationPolicy == .regular else {
+                continue
+            }
+
+            let appElement = AXUIElementCreateApplication(processID)
+            guard let windows = windows(from: appElement),
+                  !windows.isEmpty else {
+                continue
+            }
+
+            let appName = app.localizedName ?? "Unknown App"
+            for window in windows {
+                guard isWindowMinimized(window),
+                      let windowFrame = frame(of: window),
+                      !windowFrame.isEmpty else {
+                    continue
+                }
+
+                let windowTitle = stringAttributeValue(of: AccessibilityAttribute.title, from: window)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let displayName = (windowTitle?.isEmpty == false) ? windowTitle! : appName
+
+                for displayID in displayIDs {
+                    guard let displayBounds = displayBoundsByID[displayID],
+                          displayBounds.intersects(windowFrame) else {
+                        continue
+                    }
+
+                    if seenByDisplay[displayID, default: []].insert(processID).inserted {
+                        appsByDisplay[displayID, default: []].append(
+                            AppSnapshot(processID: processID, name: displayName)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func restoreFirstMinimizedWindowIfNoVisibleWindow(of processID: pid_t) -> Bool {
+        guard AXIsProcessTrusted(),
+              !hasVisibleLayerZeroWindow(of: processID),
+              let window = firstMinimizedWindow(of: processID) else {
+            return false
+        }
+
+        let result = AXUIElementSetAttributeValue(
+            window,
+            AccessibilityAttribute.minimized,
+            kCFBooleanFalse
+        )
+        return result == .success
+    }
+
+    private func firstMinimizedWindow(of processID: pid_t) -> AXUIElement? {
+        let appElement = AXUIElementCreateApplication(processID)
+        guard let windows = windows(from: appElement) else {
+            return nil
+        }
+        return windows.first(where: isWindowMinimized)
+    }
+
+    private func hasVisibleLayerZeroWindow(of processID: pid_t) -> Bool {
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return false
+        }
+
+        for windowInfo in windowList {
+            guard let ownerPIDNumber = windowInfo[kCGWindowOwnerPID as String] as? NSNumber,
+                  pid_t(ownerPIDNumber.int32Value) == processID else {
+                continue
+            }
+
+            if let layerNumber = windowInfo[kCGWindowLayer as String] as? NSNumber, layerNumber.intValue != 0 {
+                continue
+            }
+
+            if let alphaNumber = windowInfo[kCGWindowAlpha as String] as? NSNumber, alphaNumber.doubleValue <= 0 {
+                continue
+            }
+
+            guard let boundsDictionary = windowInfo[kCGWindowBounds as String] as? NSDictionary,
+                  let windowBounds = CGRect(dictionaryRepresentation: boundsDictionary),
+                  !windowBounds.isEmpty else {
+                continue
+            }
+
+            return true
+        }
+
+        return false
+    }
+
     private func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
         guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
             return nil
         }
         return CGDirectDisplayID(screenNumber.uint32Value)
+    }
+
+    private func windows(from appElement: AXUIElement) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            appElement,
+            AccessibilityAttribute.windows,
+            &value
+        )
+
+        guard result == .success,
+              let value,
+              CFGetTypeID(value) == CFArrayGetTypeID() else {
+            return nil
+        }
+
+        let array = unsafeBitCast(value, to: NSArray.self)
+        return array.compactMap { item in
+            guard CFGetTypeID(item as CFTypeRef) == AXUIElementGetTypeID() else {
+                return nil
+            }
+            return unsafeBitCast(item as CFTypeRef, to: AXUIElement.self)
+        }
+    }
+
+    private func frame(of window: AXUIElement) -> CGRect? {
+        guard let position = pointAttributeValue(of: AccessibilityAttribute.position, from: window),
+              let size = sizeAttributeValue(of: AccessibilityAttribute.size, from: window) else {
+            return nil
+        }
+        return CGRect(origin: position, size: size)
+    }
+
+    private func isWindowMinimized(_ window: AXUIElement) -> Bool {
+        boolAttributeValue(of: AccessibilityAttribute.minimized, from: window) ?? false
+    }
+
+    private func pointAttributeValue(of attribute: CFString, from element: AXUIElement) -> CGPoint? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+
+        guard result == .success,
+              let value,
+              CFGetTypeID(value) == AXValueGetTypeID() else {
+            return nil
+        }
+
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == .cgPoint else {
+            return nil
+        }
+
+        var point = CGPoint.zero
+        guard AXValueGetValue(axValue, .cgPoint, &point) else {
+            return nil
+        }
+        return point
+    }
+
+    private func sizeAttributeValue(of attribute: CFString, from element: AXUIElement) -> CGSize? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+
+        guard result == .success,
+              let value,
+              CFGetTypeID(value) == AXValueGetTypeID() else {
+            return nil
+        }
+
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == .cgSize else {
+            return nil
+        }
+
+        var size = CGSize.zero
+        guard AXValueGetValue(axValue, .cgSize, &size) else {
+            return nil
+        }
+        return size
+    }
+
+    private func boolAttributeValue(of attribute: CFString, from element: AXUIElement) -> Bool? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+
+        guard result == .success,
+              let number = value as? NSNumber else {
+            return nil
+        }
+        return number.boolValue
+    }
+
+    private func stringAttributeValue(of attribute: CFString, from element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+
+        guard result == .success,
+              let string = value as? String else {
+            return nil
+        }
+        return string
     }
 }
 
