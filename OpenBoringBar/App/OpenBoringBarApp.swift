@@ -251,8 +251,6 @@ private struct DisplayBottomBarView: View {
 private struct DisplayBarAppPill: View {
     private static let appNameMaxWidth: CGFloat = 140
 
-    @Environment(\.colorScheme) private var colorScheme
-
     let app: RunningAppItem
     let onSwitch: (pid_t) -> Void
 
@@ -263,7 +261,7 @@ private struct DisplayBarAppPill: View {
 
                 Text(app.name)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(titleColor)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: Self.appNameMaxWidth, alignment: .leading)
@@ -273,44 +271,23 @@ private struct DisplayBarAppPill: View {
             .frame(alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(backgroundColor)
+                    .fill(
+                        app.isFrontmost
+                            ? Color.white.opacity(0.72)
+                            : Color.white.opacity(0.34)
+                    )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(borderColor, lineWidth: 1)
+                    .stroke(
+                        app.isFrontmost
+                            ? Color.accentColor.opacity(0.42)
+                            : Color.black.opacity(0.08),
+                        lineWidth: 1
+                    )
             )
         }
         .buttonStyle(.plain)
-    }
-
-    private var titleColor: Color {
-        if app.isFrontmost {
-            return colorScheme == .dark ? .white : Color.black.opacity(0.9)
-        }
-
-        return .primary
-    }
-
-    private var backgroundColor: Color {
-        if app.isFrontmost {
-            return colorScheme == .dark
-                ? Color.white.opacity(0.24)
-                : Color.white.opacity(0.72)
-        }
-
-        return colorScheme == .dark
-            ? Color.white.opacity(0.20)
-            : Color.white.opacity(0.34)
-    }
-
-    private var borderColor: Color {
-        if app.isFrontmost {
-            return Color.accentColor.opacity(colorScheme == .dark ? 0.60 : 0.42)
-        }
-
-        return colorScheme == .dark
-            ? Color.white.opacity(0.20)
-            : Color.black.opacity(0.08)
     }
 }
 
