@@ -11,12 +11,12 @@ struct MainWindowView: View {
                 header
 
                 LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(Array(barManager.connectedDisplays.enumerated()), id: \.offset) { index, screen in
+                    ForEach(Array(barManager.displayStates.enumerated()), id: \.element.id) { index, display in
                         DisplayCard(
                             index: index + 1,
-                            screenFrame: screen.frame,
-                            apps: barManager.mockRunningApps,
-                            onSwitch: barManager.activate(appName:)
+                            screenFrame: display.frame,
+                            apps: display.apps,
+                            onSwitch: barManager.activate(processID:)
                         )
                     }
                 }
@@ -42,7 +42,7 @@ struct MainWindowView: View {
                 .font(.system(size: 16))
                 .foregroundStyle(.secondary)
 
-            Text("当前检测到 \(barManager.connectedDisplays.count) 个显示器")
+            Text("当前检测到 \(barManager.displayStates.count) 个显示器")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.tertiary)
         }
@@ -52,8 +52,8 @@ struct MainWindowView: View {
 private struct DisplayCard: View {
     let index: Int
     let screenFrame: CGRect
-    let apps: [String]
-    let onSwitch: (String) -> Void
+    let apps: [RunningAppItem]
+    let onSwitch: (pid_t) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -68,18 +68,28 @@ private struct DisplayCard: View {
 
             HStack(spacing: 8) {
                 ForEach(apps, id: \.self) { app in
-                    Button(action: { onSwitch(app) }) {
-                        Text(app)
+                    Button(action: { onSwitch(app.processID) }) {
+                        Text(app.name)
                             .font(.system(size: 12, weight: .medium))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 7)
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.white.opacity(0.9))
+                                    .fill(
+                                        app.isFrontmost
+                                            ? Color.accentColor.opacity(0.2)
+                                            : Color.white.opacity(0.9)
+                                    )
                             )
                     }
                     .buttonStyle(.plain)
                 }
+            }
+
+            if apps.isEmpty {
+                Text("该显示器暂无可见应用窗口")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(16)
