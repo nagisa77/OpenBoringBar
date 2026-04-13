@@ -261,7 +261,7 @@ private struct DisplayBarAppPill: View {
 
                 Text(app.name)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(app.isFrontmost ? Color.black : Color.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: Self.appNameMaxWidth, alignment: .leading)
