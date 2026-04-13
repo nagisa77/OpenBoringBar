@@ -1,27 +1,29 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'fileutils'
+require 'pathname'
 require 'xcodeproj'
 
 module OpenBoringBarProjectGenerator
     PROJECT_NAME = 'OpenBoringBar'
+    ROOT_PATH = File.expand_path('..', __dir__)
     PROJECT_PATH = File.expand_path("../#{PROJECT_NAME}.xcodeproj", __dir__)
     INFO_PLIST_PATH = 'OpenBoringBar/Resources/Info.plist'
-    SOURCE_FILES = [
-        'OpenBoringBar/App/OpenBoringBarApp.swift',
-        'OpenBoringBar/App/MainWindowView.swift',
-        'OpenBoringBar/Core/Bar/BarManager.swift'
+    SOURCE_GLOBS = [
+        'OpenBoringBar/App/**/*.swift',
+        'OpenBoringBar/Core/**/*.swift'
     ].freeze
 
     module_function
 
     def ensure!
-        return if File.exist?(PROJECT_PATH)
+        FileUtils.rm_rf(PROJECT_PATH) if File.exist?(PROJECT_PATH)
 
         project = Xcodeproj::Project.new(PROJECT_PATH)
         target = project.new_target(:application, PROJECT_NAME, :osx, '14.0')
 
-        SOURCE_FILES.each do |relative_path|
+        source_files.each do |relative_path|
             file_ref = project.main_group.new_file(relative_path)
             target.add_file_references([file_ref])
         end
@@ -39,6 +41,14 @@ module OpenBoringBarProjectGenerator
         project.root_object.attributes['LastUpgradeCheck'] = '1600'
         project.root_object.attributes['LastSwiftUpdateCheck'] = '1600'
         project.save
+    end
+
+    def source_files
+        SOURCE_GLOBS
+            .flat_map { |pattern| Dir.glob(File.join(ROOT_PATH, pattern)) }
+            .select { |path| File.file?(path) }
+            .sort
+            .map { |path| Pathname.new(path).relative_path_from(Pathname.new(ROOT_PATH)).to_s }
     end
 end
 
