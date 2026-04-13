@@ -169,7 +169,7 @@ private final class DisplayPanelController {
     }
 
     private func updateFrame(of panel: DisplayPanelWindow, in screen: NSScreen) {
-        let panelHeight: CGFloat = 60
+        let panelHeight: CGFloat = 44
         let width = screen.frame.width
         let x = screen.frame.minX
         let y = screen.frame.minY
@@ -299,11 +299,6 @@ private struct DisplayBarAppIcon: View {
             }
         }
         .frame(width: 18, height: 18)
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.white.opacity(0.88))
-        )
     }
 }
 
