@@ -125,6 +125,9 @@ final class BarManager: ObservableObject {
                 let appName = runningApplication.localizedName
                     ?? (windowInfo[kCGWindowOwnerName as String] as? String)
                     ?? "Unknown App"
+                let windowTitle = (windowInfo[kCGWindowName as String] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let displayName = (windowTitle?.isEmpty == false) ? windowTitle! : appName
 
                 for displayID in displayIDs {
                     guard let displayBounds = displayBoundsByID[displayID], displayBounds.intersects(windowBounds) else {
@@ -132,7 +135,14 @@ final class BarManager: ObservableObject {
                     }
 
                     if seenByDisplay[displayID, default: []].insert(processID).inserted {
-                        appsByDisplay[displayID, default: []].append(AppSnapshot(processID: processID, name: appName))
+                        appsByDisplay[displayID, default: []].append(AppSnapshot(processID: processID, name: displayName))
+                    } else if let windowTitle,
+                              !windowTitle.isEmpty,
+                              var snapshots = appsByDisplay[displayID],
+                              let snapshotIndex = snapshots.firstIndex(where: { $0.processID == processID }),
+                              snapshots[snapshotIndex].name == appName {
+                        snapshots[snapshotIndex] = AppSnapshot(processID: processID, name: windowTitle)
+                        appsByDisplay[displayID] = snapshots
                     }
 
                     if processID == frontmostPID, frontmostDisplayID == nil {
