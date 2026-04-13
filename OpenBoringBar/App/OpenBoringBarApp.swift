@@ -274,7 +274,7 @@ private struct DisplayBarAppPill: View {
                     .fill(
                         app.isFrontmost
                             ? Color.white.opacity(0.72)
-                            : Color.white.opacity(0.34)
+                            : Color.white.opacity(0.1)
                     )
             )
             .overlay(
