@@ -92,6 +92,7 @@ final class BarManager: ObservableObject {
               !app.isTerminated else {
             return
         }
+        let previousFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
 
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == processID,
            minimizeFocusedWindow(of: processID) {
@@ -130,6 +131,14 @@ final class BarManager: ObservableObject {
             }
 
             _ = self.restoreFirstMinimizedWindowIfNoVisibleWindow(of: processID)
+            let currentFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            if previousFrontmostPID != processID, currentFrontmostPID == processID {
+                NotificationCenter.default.post(
+                    name: .barManagerDidConfirmCapsuleAppSwitch,
+                    object: self,
+                    userInfo: ["processID": NSNumber(value: processID)]
+                )
+            }
             self.refreshDisplayStates()
         }
     }
@@ -505,6 +514,10 @@ final class BarManager: ObservableObject {
         }
         return string
     }
+}
+
+extension Notification.Name {
+    static let barManagerDidConfirmCapsuleAppSwitch = Notification.Name("BarManager.didConfirmCapsuleAppSwitch")
 }
 
 private struct AppSnapshot {

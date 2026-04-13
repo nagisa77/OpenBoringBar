@@ -70,6 +70,7 @@ final class ActiveWindowBottomGuardManager {
     private var lastResizeExecutionUptime: TimeInterval = -.infinity
     private var pendingResizeRequest: PendingResizeRequest?
     private var pendingResizeWorkItem: DispatchWorkItem?
+    private var delayedCapsuleSwitchAdjustWorkItem: DispatchWorkItem?
 
     init() {
         log("init")
@@ -80,6 +81,8 @@ final class ActiveWindowBottomGuardManager {
     }
 
     deinit {
+        delayedCapsuleSwitchAdjustWorkItem?.cancel()
+        delayedCapsuleSwitchAdjustWorkItem = nil
         pendingResizeWorkItem?.cancel()
         pendingResizeWorkItem = nil
         pendingResizeRequest = nil
@@ -88,7 +91,7 @@ final class ActiveWindowBottomGuardManager {
         log("deinit")
     }
 
-    private func adjustActiveWindowIfNeeded() {
+    private func adjustActiveWindowIfNeeded(source: String = "active") {
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
             log("skip: no frontmost application")
             lastSnapshot = nil
@@ -109,7 +112,28 @@ final class ActiveWindowBottomGuardManager {
             return
         }
 
-        _ = adjustWindowIfNeeded(focusedWindow, processID: processID, source: "active")
+        _ = adjustWindowIfNeeded(focusedWindow, processID: processID, source: source)
+    }
+
+    private func scheduleDelayedAdjustAfterConfirmedSwitch(expectedProcessID: pid_t) {
+        delayedCapsuleSwitchAdjustWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.delayedCapsuleSwitchAdjustWorkItem = nil
+
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedProcessID else {
+                self.log("[capsuleSwitchDelayed] skip: frontmost changed before delayed adjust, expected pid=\(expectedProcessID)")
+                return
+            }
+
+            self.adjustActiveWindowIfNeeded(source: "capsuleSwitchDelayed")
+        }
+
+        delayedCapsuleSwitchAdjustWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
     }
 
     private func configureWorkspaceObservers() {
@@ -150,6 +174,20 @@ final class ActiveWindowBottomGuardManager {
                 }
 
                 self.removeObserver(for: app.processIdentifier)
+            },
+            NotificationCenter.default.addObserver(
+                forName: .barManagerDidConfirmCapsuleAppSwitch,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self,
+                      let processIDNumber = notification.userInfo?["processID"] as? NSNumber else {
+                    return
+                }
+
+                self.scheduleDelayedAdjustAfterConfirmedSwitch(
+                    expectedProcessID: pid_t(processIDNumber.int32Value)
+                )
             }
         ]
     }
