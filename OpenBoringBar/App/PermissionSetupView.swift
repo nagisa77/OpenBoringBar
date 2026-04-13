@@ -38,7 +38,7 @@ struct PermissionSetupView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.black.opacity(0.05))
+                .fill(Color(nsColor: .quaternaryLabelColor))
                 .frame(width: 44, height: 44)
                 .overlay {
                     Image(systemName: "shield.lefthalf.filled")
@@ -111,11 +111,11 @@ struct PermissionSetupView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 20)
-                .fill(Color.white.opacity(0.85))
+                .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 20)
-                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
         )
     }
 
@@ -134,12 +134,12 @@ struct PermissionSetupView: View {
                 Text("4. Accessibility entry must match bundle ID: \(Bundle.main.bundleIdentifier ?? "(unknown)")")
             }
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(Color.black.opacity(0.6))
+            .foregroundStyle(.secondary)
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.white.opacity(0.9))
+                    .fill(Color(nsColor: .controlBackgroundColor))
             )
         }
     }
@@ -190,7 +190,7 @@ private struct PermissionRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.black.opacity(0.05))
+                .fill(Color(nsColor: .quaternaryLabelColor))
                 .frame(width: 34, height: 34)
                 .overlay {
                     Image(systemName: iconName)
@@ -247,12 +247,14 @@ private struct PermissionBadge: View {
 }
 
 private struct SetupButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+
     let isPrimary: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(isPrimary ? Color.white : Color.primary)
+            .foregroundStyle(foregroundColor)
             .padding(.horizontal, 16)
             .padding(.vertical, 7)
             .background(
@@ -261,9 +263,25 @@ private struct SetupButtonStyle: ButtonStyle {
             )
     }
 
+    private var foregroundColor: Color {
+        guard isPrimary else {
+            return .primary
+        }
+
+        return colorScheme == .dark ? Color.black : Color.white
+    }
+
     private func backgroundColor(isPressed: Bool) -> Color {
         if isPrimary {
+            if colorScheme == .dark {
+                return isPressed ? Color.white.opacity(0.3) : Color.white.opacity(0.22)
+            }
+
             return isPressed ? Color.black.opacity(0.6) : Color.black.opacity(0.45)
+        }
+
+        if colorScheme == .dark {
+            return isPressed ? Color.white.opacity(0.24) : Color.white.opacity(0.14)
         }
 
         return isPressed ? Color.black.opacity(0.12) : Color.black.opacity(0.08)
