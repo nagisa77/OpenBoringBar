@@ -12,6 +12,15 @@ final class ActiveWindowBottomGuardManager {
         static let fullScreen = "AXFullScreen" as CFString
     }
 
+    private enum AccessibilityNotification {
+        static let focusedWindowChanged = "AXFocusedWindowChanged"
+        static let mainWindowChanged = "AXMainWindowChanged"
+        static let windowCreated = "AXWindowCreated"
+        static let moved = "AXMoved"
+        static let resized = "AXResized"
+        static let uiElementDestroyed = "AXUIElementDestroyed"
+    }
+
     private struct ActiveProcessSnapshot: Equatable {
         let processID: pid_t
         let windowFrame: CGRect
@@ -22,33 +31,37 @@ final class ActiveWindowBottomGuardManager {
         category: "ActiveWindowBottomGuard"
     )
 
-    private var refreshTimer: Timer?
+    private static let observerCallback: AXObserverCallback = { _, element, notification, refcon in
+        guard let refcon else {
+            return
+        }
+
+        let manager = Unmanaged<ActiveWindowBottomGuardManager>
+            .fromOpaque(refcon)
+            .takeUnretainedValue()
+        manager.handleAccessibilityNotification(
+            element: element,
+            notification: notification as String
+        )
+    }
+
     private var lastSnapshot: ActiveProcessSnapshot?
+    private var observerByPID: [pid_t: AXObserver] = [:]
+    private var appElementByPID: [pid_t: AXUIElement] = [:]
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     init() {
         log("init")
-        startTimer()
+        configureWorkspaceObservers()
+        installObserversForRunningApps()
         adjustAllWindowsAtLaunchIfNeeded()
         adjustActiveWindowIfNeeded()
     }
 
     deinit {
+        teardownWorkspaceObservers()
+        teardownAllAXObservers()
         log("deinit")
-        refreshTimer?.invalidate()
-    }
-
-    private func startTimer() {
-        let timer = Timer(
-            timeInterval: BarLayoutConstants.activeWindowCheckInterval,
-            repeats: true
-        ) { [weak self] _ in
-            self?.log("timer tick")
-            self?.adjustActiveWindowIfNeeded()
-        }
-
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
-        log("timer started (interval: \(BarLayoutConstants.activeWindowCheckInterval)s)")
     }
 
     private func adjustActiveWindowIfNeeded() {
@@ -73,6 +86,262 @@ final class ActiveWindowBottomGuardManager {
         }
 
         _ = adjustWindowIfNeeded(focusedWindow, processID: processID, source: "active")
+    }
+
+    private func configureWorkspaceObservers() {
+        workspaceObservers = [
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didLaunchApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self,
+                      let app = self.runningApplication(from: notification) else {
+                    return
+                }
+
+                self.installObserverIfNeeded(for: app)
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self,
+                      let app = self.runningApplication(from: notification) else {
+                    return
+                }
+
+                self.installObserverIfNeeded(for: app)
+                self.adjustActiveWindowIfNeeded()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self,
+                      let app = self.runningApplication(from: notification) else {
+                    return
+                }
+
+                self.removeObserver(for: app.processIdentifier)
+            }
+        ]
+    }
+
+    private func teardownWorkspaceObservers() {
+        for observer in workspaceObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        workspaceObservers.removeAll()
+    }
+
+    private func installObserversForRunningApps() {
+        for app in NSWorkspace.shared.runningApplications {
+            installObserverIfNeeded(for: app)
+        }
+    }
+
+    private func installObserverIfNeeded(for app: NSRunningApplication) {
+        let processID = app.processIdentifier
+        guard processID != ProcessInfo.processInfo.processIdentifier,
+              !app.isTerminated,
+              app.activationPolicy == .regular else {
+            return
+        }
+
+        guard observerByPID[processID] == nil else {
+            return
+        }
+
+        var observer: AXObserver?
+        let createResult = AXObserverCreate(
+            processID,
+            Self.observerCallback,
+            &observer
+        )
+
+        guard createResult == .success, let observer else {
+            log("AXObserverCreate failed, pid=\(processID), result=\(createResult.rawValue)")
+            return
+        }
+
+        let appElement = AXUIElementCreateApplication(processID)
+        observerByPID[processID] = observer
+        appElementByPID[processID] = appElement
+
+        CFRunLoopAddSource(
+            CFRunLoopGetMain(),
+            AXObserverGetRunLoopSource(observer),
+            .commonModes
+        )
+
+        registerAppLevelNotifications(
+            observer: observer,
+            appElement: appElement,
+            processID: processID
+        )
+        registerWindowLevelNotifications(processID: processID)
+        log("observer installed, pid=\(processID)")
+    }
+
+    private func removeObserver(for processID: pid_t) {
+        guard let observer = observerByPID.removeValue(forKey: processID) else {
+            appElementByPID.removeValue(forKey: processID)
+            return
+        }
+
+        CFRunLoopRemoveSource(
+            CFRunLoopGetMain(),
+            AXObserverGetRunLoopSource(observer),
+            .commonModes
+        )
+        appElementByPID.removeValue(forKey: processID)
+        log("observer removed, pid=\(processID)")
+    }
+
+    private func teardownAllAXObservers() {
+        let processIDs = Array(observerByPID.keys)
+        for processID in processIDs {
+            removeObserver(for: processID)
+        }
+    }
+
+    private func registerAppLevelNotifications(
+        observer: AXObserver,
+        appElement: AXUIElement,
+        processID: pid_t
+    ) {
+        registerNotification(
+            AccessibilityNotification.focusedWindowChanged,
+            observer: observer,
+            element: appElement,
+            processID: processID
+        )
+        registerNotification(
+            AccessibilityNotification.mainWindowChanged,
+            observer: observer,
+            element: appElement,
+            processID: processID
+        )
+        registerNotification(
+            AccessibilityNotification.windowCreated,
+            observer: observer,
+            element: appElement,
+            processID: processID
+        )
+    }
+
+    private func registerWindowLevelNotifications(processID: pid_t) {
+        guard let appElement = appElementByPID[processID],
+              let observer = observerByPID[processID],
+              let windows = windows(from: appElement) else {
+            return
+        }
+
+        for window in windows {
+            registerNotification(
+                AccessibilityNotification.moved,
+                observer: observer,
+                element: window,
+                processID: processID
+            )
+            registerNotification(
+                AccessibilityNotification.resized,
+                observer: observer,
+                element: window,
+                processID: processID
+            )
+            registerNotification(
+                AccessibilityNotification.uiElementDestroyed,
+                observer: observer,
+                element: window,
+                processID: processID
+            )
+        }
+    }
+
+    private func registerNotification(
+        _ notification: String,
+        observer: AXObserver,
+        element: AXUIElement,
+        processID: pid_t
+    ) {
+        let result = AXObserverAddNotification(
+            observer,
+            element,
+            notification as CFString,
+            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        )
+
+        if result == .success || result == .notificationAlreadyRegistered {
+            return
+        }
+
+        log("AXObserverAddNotification failed, pid=\(processID), notification=\(notification), result=\(result.rawValue)")
+    }
+
+    private func handleAccessibilityNotification(
+        element: AXUIElement,
+        notification: String
+    ) {
+        guard let processID = processID(of: element) else {
+            log("event ignored: cannot resolve pid, notification=\(notification)")
+            return
+        }
+
+        switch notification {
+        case AccessibilityNotification.windowCreated:
+            registerWindowLevelNotifications(processID: processID)
+            if let appElement = appElementByPID[processID],
+               let focusedWindow = focusedWindow(from: appElement) {
+                _ = adjustWindowIfNeeded(
+                    focusedWindow,
+                    processID: processID,
+                    source: "event:\(notification)"
+                )
+            }
+
+        case AccessibilityNotification.focusedWindowChanged,
+             AccessibilityNotification.mainWindowChanged:
+            registerWindowLevelNotifications(processID: processID)
+            if let appElement = appElementByPID[processID],
+               let focusedWindow = focusedWindow(from: appElement) {
+                _ = adjustWindowIfNeeded(
+                    focusedWindow,
+                    processID: processID,
+                    source: "event:\(notification)"
+                )
+            }
+
+        case AccessibilityNotification.moved,
+             AccessibilityNotification.resized:
+            _ = adjustWindowIfNeeded(
+                element,
+                processID: processID,
+                source: "event:\(notification)"
+            )
+
+        case AccessibilityNotification.uiElementDestroyed:
+            break
+
+        default:
+            log("event ignored: notification=\(notification), pid=\(processID)")
+        }
+    }
+
+    private func runningApplication(from notification: Notification) -> NSRunningApplication? {
+        notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+    }
+
+    private func processID(of element: AXUIElement) -> pid_t? {
+        var processID: pid_t = 0
+        let result = AXUIElementGetPid(element, &processID)
+        guard result == .success else {
+            return nil
+        }
+        return processID
     }
 
     private func adjustAllWindowsAtLaunchIfNeeded() {
@@ -336,8 +605,5 @@ final class ActiveWindowBottomGuardManager {
 
     private func log(_ message: String) {
         Self.logger.debug("\(message, privacy: .public)")
-#if DEBUG
-        print("[ActiveWindowBottomGuard] \(message)")
-#endif
     }
 }
