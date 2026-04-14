@@ -11,6 +11,7 @@ final class BarManager: ObservableObject {
     private let windowPreviewProvider: WindowPreviewProviding
     private let displayStateBuilder: BarDisplayStateBuilder
     private let accessibilityObserverManager: BarAccessibilityObserverManager
+    private let workspaceNotificationCenter: NotificationCenter
 
     private var displayObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol]
@@ -32,6 +33,7 @@ final class BarManager: ObservableObject {
         self.windowPreviewProvider = windowPreviewProvider
         self.displayStateBuilder = displayStateBuilder
         self.accessibilityObserverManager = accessibilityObserverManager
+        self.workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
         self.workspaceObservers = []
 
         self.accessibilityObserverManager.onObservedChange = { [weak self] in
@@ -172,16 +174,16 @@ final class BarManager: ObservableObject {
 
     private func configureWorkspaceObservers() {
         workspaceObservers = [
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] _ in
                 self?.scheduleDisplayRefresh()
             },
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didLaunchApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] notification in
                 guard let self else {
@@ -193,9 +195,9 @@ final class BarManager: ObservableObject {
                 }
                 self.scheduleDisplayRefresh()
             },
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didTerminateApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] notification in
                 guard let self else {
@@ -207,23 +209,23 @@ final class BarManager: ObservableObject {
                 }
                 self.scheduleDisplayRefresh()
             },
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didHideApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] _ in
                 self?.scheduleDisplayRefresh()
             },
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didUnhideApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] _ in
                 self?.scheduleDisplayRefresh()
             },
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.activeSpaceDidChangeNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] _ in
                 self?.scheduleDisplayRefresh()
@@ -233,7 +235,7 @@ final class BarManager: ObservableObject {
 
     private func teardownWorkspaceObservers() {
         for observer in workspaceObservers {
-            NotificationCenter.default.removeObserver(observer)
+            workspaceNotificationCenter.removeObserver(observer)
         }
         workspaceObservers.removeAll()
     }

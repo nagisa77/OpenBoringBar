@@ -55,6 +55,7 @@ final class ActiveWindowBottomGuardManager {
     private var pendingResizeRequest: PendingResizeRequest?
     private var pendingResizeWorkItem: DispatchWorkItem?
     private var delayedCapsuleSwitchAdjustWorkItem: DispatchWorkItem?
+    private let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
 
     init(eventBus: AppEventBus) {
         log("init")
@@ -140,9 +141,9 @@ final class ActiveWindowBottomGuardManager {
 
     private func configureWorkspaceObservers() {
         workspaceObservers = [
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didLaunchApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] notification in
                 guard let self,
@@ -152,9 +153,9 @@ final class ActiveWindowBottomGuardManager {
 
                 self.installObserverIfNeeded(for: app)
             },
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] notification in
                 guard let self,
@@ -165,9 +166,9 @@ final class ActiveWindowBottomGuardManager {
                 self.installObserverIfNeeded(for: app)
                 self.adjustActiveWindowIfNeeded()
             },
-            NotificationCenter.default.addObserver(
+            workspaceNotificationCenter.addObserver(
                 forName: NSWorkspace.didTerminateApplicationNotification,
-                object: NSWorkspace.shared,
+                object: nil,
                 queue: .main
             ) { [weak self] notification in
                 guard let self,
@@ -182,7 +183,7 @@ final class ActiveWindowBottomGuardManager {
 
     private func teardownWorkspaceObservers() {
         for observer in workspaceObservers {
-            NotificationCenter.default.removeObserver(observer)
+            workspaceNotificationCenter.removeObserver(observer)
         }
         workspaceObservers.removeAll()
     }
