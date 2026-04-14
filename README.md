@@ -30,21 +30,6 @@ OpenBoringBar is an open-source alternative to [boringbar.app](https://boringbar
 - Left-side launcher button with searchable application open panel.
 - Stability and maintainability before visual complexity.
 
-## Architecture Snapshot
-
-Bar-related source layout:
-
-```text
-OpenBoringBar/Core/Bar/
-  ActiveWindowBottomGuardManager.swift
-  BarAccessibilityObserverManager.swift
-  BarAppSnapshot.swift
-  BarDisplayAppOrderManager.swift
-  BarDisplayStateBuilder.swift
-  BarLayoutConstants.swift
-  BarManager.swift
-```
-
 ## Requirements
 
 - macOS 14+
