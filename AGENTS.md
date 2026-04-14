@@ -37,16 +37,20 @@ OpenBoringBar/
       ActiveWindowBottomGuardManager.swift
       BarLayoutConstants.swift
     DisplayBar/
+      AppWindowPreviewPanelView.swift
+      AppWindowPreviewPanelWindow.swift
       ApplicationLauncherPopoverView.swift
       DisplayPanelController.swift
       DisplayBottomBarView.swift
     Domain/
       Models/
+        AppWindowPreviewItem.swift
         BarModels.swift
         LaunchableApplicationItem.swift
     Infrastructure/
       Application/
         InstalledApplicationProvider.swift
+        WindowPreviewProvider.swift
       Accessibility/
         AXElementInspector.swift
       Screen/

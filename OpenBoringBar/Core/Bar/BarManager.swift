@@ -9,19 +9,22 @@ final class BarManager: ObservableObject {
     private let appOrderManager: AppOrderManager
     private let eventBus: AppEventBus
     private let installedApplicationProvider: InstalledApplicationProviding
+    private let windowPreviewProvider: WindowPreviewProviding
     private var displayObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol]
     private var refreshTimer: Timer?
 
     init(
         eventBus: AppEventBus,
-        installedApplicationProvider: InstalledApplicationProviding = InstalledApplicationProvider()
+        installedApplicationProvider: InstalledApplicationProviding = InstalledApplicationProvider(),
+        windowPreviewProvider: WindowPreviewProviding = WindowPreviewProvider()
     ) {
         self.displayStates = []
         self.launchableApplications = []
         self.appOrderManager = AppOrderManager()
         self.eventBus = eventBus
         self.installedApplicationProvider = installedApplicationProvider
+        self.windowPreviewProvider = windowPreviewProvider
         self.workspaceObservers = []
 
         displayObserver = NotificationCenter.default.addObserver(
@@ -137,6 +140,16 @@ final class BarManager: ObservableObject {
         NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { [weak self] _, _ in
             self?.refreshDisplayStates()
         }
+    }
+
+    func windowPreviews(
+        for processID: pid_t,
+        on displayID: CGDirectDisplayID
+    ) -> [AppWindowPreviewItem] {
+        windowPreviewProvider.fetchWindowPreviews(
+            for: processID,
+            displayID: displayID
+        )
     }
 
     private func minimizeFocusedWindow(of processID: pid_t) -> Bool {

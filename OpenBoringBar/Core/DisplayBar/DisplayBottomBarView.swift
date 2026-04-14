@@ -6,6 +6,7 @@ struct DisplayBottomBarView: View {
     let launchableApplications: [LaunchableApplicationItem]
     let onSwitch: (pid_t) -> Void
     let onOpenApplication: (URL) -> Void
+    let onAppHoverChanged: (pid_t?, CGRect?) -> Void
 
     @State private var isApplicationLauncherPresented = false
 
@@ -36,7 +37,8 @@ struct DisplayBottomBarView: View {
                             ForEach(apps, id: \.self) { app in
                                 DisplayBarAppPill(
                                     app: app,
-                                    onSwitch: onSwitch
+                                    onSwitch: onSwitch,
+                                    onHoverChanged: onAppHoverChanged
                                 )
                             }
                         }
@@ -87,6 +89,7 @@ private struct DisplayBarAppPill: View {
 
     let app: RunningAppItem
     let onSwitch: (pid_t) -> Void
+    let onHoverChanged: (pid_t?, CGRect?) -> Void
 
     var body: some View {
         Button(action: { onSwitch(app.processID) }) {
@@ -120,6 +123,15 @@ private struct DisplayBarAppPill: View {
                         lineWidth: 1
                     )
             )
+            .background(
+                DisplayBarPillHoverTrackingArea { isHovering, frameInScreen in
+                    if isHovering {
+                        onHoverChanged(app.processID, frameInScreen)
+                    } else {
+                        onHoverChanged(nil, nil)
+                    }
+                }
+            )
         }
         .buttonStyle(.plain)
     }
@@ -146,5 +158,72 @@ private struct DisplayBarAppIcon: View {
             }
         }
         .frame(width: 18, height: 18)
+    }
+}
+
+private struct DisplayBarPillHoverTrackingArea: NSViewRepresentable {
+    let onHoverChanged: (Bool, CGRect) -> Void
+
+    func makeNSView(context: Context) -> DisplayBarPillHoverTrackingNSView {
+        let view = DisplayBarPillHoverTrackingNSView()
+        view.onHoverChanged = onHoverChanged
+        return view
+    }
+
+    func updateNSView(_ nsView: DisplayBarPillHoverTrackingNSView, context: Context) {
+        nsView.onHoverChanged = onHoverChanged
+    }
+}
+
+private final class DisplayBarPillHoverTrackingNSView: NSView {
+    var onHoverChanged: ((Bool, CGRect) -> Void)?
+
+    private var trackingAreaRef: NSTrackingArea?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let trackingAreaRef {
+            removeTrackingArea(trackingAreaRef)
+        }
+
+        let options: NSTrackingArea.Options = [
+            .mouseEnteredAndExited,
+            .activeAlways,
+            .inVisibleRect
+        ]
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: options,
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        trackingAreaRef = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        notifyHoverChanged(isHovering: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        notifyHoverChanged(isHovering: false)
+    }
+
+    private func notifyHoverChanged(isHovering: Bool) {
+        guard let window else {
+            return
+        }
+
+        let frameInWindow = convert(bounds, to: nil)
+        let frameInScreen = window.convertToScreen(frameInWindow)
+        onHoverChanged?(isHovering, frameInScreen)
     }
 }
