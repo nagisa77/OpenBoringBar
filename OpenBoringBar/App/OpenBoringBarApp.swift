@@ -5,7 +5,7 @@ struct OpenBoringBarApp: App {
     @StateObject private var permissionManager = PermissionManager()
     @StateObject private var runtimeCoordinator = AppRuntimeCoordinator()
 
-    private let setupMinHeight: CGFloat = 760
+    private let setupMinHeight: CGFloat = 590
     private let runtimeMinHeight: CGFloat = 540
 
     var body: some Scene {
