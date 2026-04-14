@@ -56,6 +56,9 @@ OpenBoringBar/
       Screen/
         NSScreen+DisplayID.swift
   Resources/
+    Assets.xcassets/
+      AppIcon.appiconset/
+    Info.plist
 ```
 
 ## Layer Responsibilities (Must Follow)

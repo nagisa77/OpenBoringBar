@@ -14,6 +14,9 @@ module OpenBoringBarProjectGenerator
         'OpenBoringBar/App/**/*.swift',
         'OpenBoringBar/Core/**/*.swift'
     ].freeze
+    RESOURCE_GLOBS = [
+        'OpenBoringBar/Resources/**/*.xcassets'
+    ].freeze
 
     module_function
 
@@ -29,12 +32,19 @@ module OpenBoringBarProjectGenerator
             target.add_file_references([file_ref])
         end
 
+        resource_files.each do |relative_path|
+            group = group_for_file_path(project.main_group, relative_path)
+            file_ref = group.new_file(File.basename(relative_path))
+            target.resources_build_phase.add_file_reference(file_ref, true)
+        end
+
         target.build_configurations.each do |config|
             config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.openboringbar.app'
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
             config.build_settings['INFOPLIST_FILE'] = INFO_PLIST_PATH
             config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
+            config.build_settings['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'AppIcon'
             config.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
             config.build_settings['LD_RUNPATH_SEARCH_PATHS'] = ['$(inherited)', '@executable_path/../Frameworks']
         end
@@ -48,6 +58,14 @@ module OpenBoringBarProjectGenerator
         SOURCE_GLOBS
             .flat_map { |pattern| Dir.glob(File.join(ROOT_PATH, pattern)) }
             .select { |path| File.file?(path) }
+            .sort
+            .map { |path| Pathname.new(path).relative_path_from(Pathname.new(ROOT_PATH)).to_s }
+    end
+
+    def resource_files
+        RESOURCE_GLOBS
+            .flat_map { |pattern| Dir.glob(File.join(ROOT_PATH, pattern)) }
+            .select { |path| File.directory?(path) }
             .sort
             .map { |path| Pathname.new(path).relative_path_from(Pathname.new(ROOT_PATH)).to_s }
     end
