@@ -2,6 +2,21 @@
 
 OpenBoringBar is an open-source alternative to [boringbar.app](https://boringbar.app), focused on delivering a practical macOS bottom taskbar experience for multi-display setups.
 
+## Screenshots
+
+### Normal Bar
+
+![Normal Bar](docs/screenshots/normal-looks-like.png)
+
+### Multi-Window Preview
+
+![Multi-Window Preview](docs/screenshots/multi-preview-window.png)
+
+### App Launcher Search
+
+![App Launcher Search](docs/screenshots/file-search.png)
+
+
 ## Core Goals
 
 - One bottom bar per display.
