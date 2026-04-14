@@ -6,49 +6,41 @@ final class BarManager: ObservableObject {
     @Published private(set) var displayStates: [DisplayState]
     @Published private(set) var launchableApplications: [LaunchableApplicationItem]
 
-    private static let axObserverCallback: AXObserverCallback = { _, element, notification, refcon in
-        guard let refcon else {
-            return
-        }
-
-        let manager = Unmanaged<BarManager>
-            .fromOpaque(refcon)
-            .takeUnretainedValue()
-        manager.handleAccessibilityNotification(
-            element: element,
-            notification: notification as String
-        )
-    }
-
-    private let appOrderManager: AppOrderManager
     private let eventBus: AppEventBus
     private let installedApplicationProvider: InstalledApplicationProviding
     private let windowPreviewProvider: WindowPreviewProviding
+    private let displayStateBuilder: BarDisplayStateBuilder
+    private let accessibilityObserverManager: BarAccessibilityObserverManager
+
     private var displayObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol]
-    private var observerByPID: [pid_t: AXObserver]
-    private var appElementByPID: [pid_t: AXUIElement]
     private var pendingRefreshWorkItem: DispatchWorkItem?
+
     private let refreshDebounceInterval: TimeInterval = 0.10
 
     init(
         eventBus: AppEventBus,
         installedApplicationProvider: InstalledApplicationProviding = InstalledApplicationProvider(),
-        windowPreviewProvider: WindowPreviewProviding = WindowPreviewProvider()
+        windowPreviewProvider: WindowPreviewProviding = WindowPreviewProvider(),
+        displayStateBuilder: BarDisplayStateBuilder = BarDisplayStateBuilder(),
+        accessibilityObserverManager: BarAccessibilityObserverManager = BarAccessibilityObserverManager()
     ) {
         self.displayStates = []
         self.launchableApplications = []
-        self.appOrderManager = AppOrderManager()
         self.eventBus = eventBus
         self.installedApplicationProvider = installedApplicationProvider
         self.windowPreviewProvider = windowPreviewProvider
+        self.displayStateBuilder = displayStateBuilder
+        self.accessibilityObserverManager = accessibilityObserverManager
         self.workspaceObservers = []
-        self.observerByPID = [:]
-        self.appElementByPID = [:]
+
+        self.accessibilityObserverManager.onObservedChange = { [weak self] in
+            self?.scheduleDisplayRefresh()
+        }
 
         configureDisplayObserver()
         configureWorkspaceObservers()
-        installObserversForRunningApps()
+        self.accessibilityObserverManager.installObserversForRunningApps()
 
         refreshDisplayStates()
         refreshLaunchableApplications()
@@ -57,7 +49,7 @@ final class BarManager: ObservableObject {
     deinit {
         pendingRefreshWorkItem?.cancel()
         pendingRefreshWorkItem = nil
-        teardownAllAXObservers()
+        accessibilityObserverManager.teardownAllObservers()
 
         if let displayObserver {
             NotificationCenter.default.removeObserver(displayObserver)
@@ -197,7 +189,7 @@ final class BarManager: ObservableObject {
                 }
 
                 if let app = self.runningApplication(from: notification) {
-                    self.installObserverIfNeeded(for: app)
+                    self.accessibilityObserverManager.installObserverIfNeeded(for: app)
                 }
                 self.scheduleDisplayRefresh()
             },
@@ -211,7 +203,7 @@ final class BarManager: ObservableObject {
                 }
 
                 if let app = self.runningApplication(from: notification) {
-                    self.removeObserver(for: app.processIdentifier)
+                    self.accessibilityObserverManager.removeObserver(for: app.processIdentifier)
                 }
                 self.scheduleDisplayRefresh()
             },
@@ -262,211 +254,8 @@ final class BarManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + refreshDebounceInterval, execute: workItem)
     }
 
-    private func installObserversForRunningApps() {
-        guard AXIsProcessTrusted() else {
-            return
-        }
-
-        for app in NSWorkspace.shared.runningApplications {
-            installObserverIfNeeded(for: app)
-        }
-    }
-
-    private func installObserverIfNeeded(for app: NSRunningApplication) {
-        guard AXIsProcessTrusted() else {
-            return
-        }
-
-        let processID = app.processIdentifier
-        guard processID != ProcessInfo.processInfo.processIdentifier,
-              !app.isTerminated,
-              app.activationPolicy == .regular else {
-            return
-        }
-
-        guard observerByPID[processID] == nil else {
-            return
-        }
-
-        var observer: AXObserver?
-        let createResult = AXObserverCreate(
-            processID,
-            Self.axObserverCallback,
-            &observer
-        )
-
-        guard createResult == .success, let observer else {
-            return
-        }
-
-        let appElement = AXUIElementCreateApplication(processID)
-        observerByPID[processID] = observer
-        appElementByPID[processID] = appElement
-
-        CFRunLoopAddSource(
-            CFRunLoopGetMain(),
-            AXObserverGetRunLoopSource(observer),
-            .commonModes
-        )
-
-        registerAppLevelNotifications(
-            observer: observer,
-            appElement: appElement
-        )
-        registerWindowLevelNotifications(processID: processID)
-    }
-
-    private func removeObserver(for processID: pid_t) {
-        guard let observer = observerByPID.removeValue(forKey: processID) else {
-            appElementByPID.removeValue(forKey: processID)
-            return
-        }
-
-        CFRunLoopRemoveSource(
-            CFRunLoopGetMain(),
-            AXObserverGetRunLoopSource(observer),
-            .commonModes
-        )
-        appElementByPID.removeValue(forKey: processID)
-    }
-
-    private func teardownAllAXObservers() {
-        let processIDs = Array(observerByPID.keys)
-        for processID in processIDs {
-            removeObserver(for: processID)
-        }
-    }
-
-    private func registerAppLevelNotifications(
-        observer: AXObserver,
-        appElement: AXUIElement
-    ) {
-        registerNotification(
-            AXNotificationName.focusedWindowChanged,
-            observer: observer,
-            element: appElement
-        )
-        registerNotification(
-            AXNotificationName.mainWindowChanged,
-            observer: observer,
-            element: appElement
-        )
-        registerNotification(
-            AXNotificationName.windowCreated,
-            observer: observer,
-            element: appElement
-        )
-        registerNotification(
-            AXNotificationName.applicationHidden,
-            observer: observer,
-            element: appElement
-        )
-        registerNotification(
-            AXNotificationName.applicationShown,
-            observer: observer,
-            element: appElement
-        )
-    }
-
-    private func registerWindowLevelNotifications(processID: pid_t) {
-        guard let appElement = appElementByPID[processID],
-              let observer = observerByPID[processID],
-              let windows = AXElementInspector.windows(from: appElement) else {
-            return
-        }
-
-        for window in windows {
-            registerNotification(
-                AXNotificationName.moved,
-                observer: observer,
-                element: window
-            )
-            registerNotification(
-                AXNotificationName.resized,
-                observer: observer,
-                element: window
-            )
-            registerNotification(
-                AXNotificationName.titleChanged,
-                observer: observer,
-                element: window
-            )
-            registerNotification(
-                AXNotificationName.windowMiniaturized,
-                observer: observer,
-                element: window
-            )
-            registerNotification(
-                AXNotificationName.windowDeminiaturized,
-                observer: observer,
-                element: window
-            )
-            registerNotification(
-                AXNotificationName.uiElementDestroyed,
-                observer: observer,
-                element: window
-            )
-        }
-    }
-
-    private func registerNotification(
-        _ notification: String,
-        observer: AXObserver,
-        element: AXUIElement
-    ) {
-        let result = AXObserverAddNotification(
-            observer,
-            element,
-            notification as CFString,
-            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        )
-
-        if result == .success || result == .notificationAlreadyRegistered {
-            return
-        }
-    }
-
-    private func handleAccessibilityNotification(
-        element: AXUIElement,
-        notification: String
-    ) {
-        guard let processID = processID(of: element) else {
-            return
-        }
-
-        switch notification {
-        case AXNotificationName.windowCreated,
-             AXNotificationName.focusedWindowChanged,
-             AXNotificationName.mainWindowChanged:
-            registerWindowLevelNotifications(processID: processID)
-            scheduleDisplayRefresh()
-
-        case AXNotificationName.moved,
-             AXNotificationName.resized,
-             AXNotificationName.titleChanged,
-             AXNotificationName.windowMiniaturized,
-             AXNotificationName.windowDeminiaturized,
-             AXNotificationName.applicationHidden,
-             AXNotificationName.applicationShown,
-             AXNotificationName.uiElementDestroyed:
-            scheduleDisplayRefresh()
-
-        default:
-            break
-        }
-    }
-
     private func runningApplication(from notification: Notification) -> NSRunningApplication? {
         notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-    }
-
-    private func processID(of element: AXUIElement) -> pid_t? {
-        var processID: pid_t = 0
-        let result = AXUIElementGetPid(element, &processID)
-        guard result == .success else {
-            return nil
-        }
-        return processID
     }
 
     private func minimizeFocusedWindow(of processID: pid_t) -> Bool {
@@ -502,171 +291,11 @@ final class BarManager: ObservableObject {
     }
 
     private func refreshDisplayStates() {
-        let screens = NSScreen.screens
-        let displayIDs = screens.compactMap(\.displayID)
-        appOrderManager.syncActiveDisplays(Set(displayIDs))
-        let displayBoundsByID = Dictionary(uniqueKeysWithValues: displayIDs.map { ($0, CGDisplayBounds($0)) })
-        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-
-        var appsByDisplay: [CGDirectDisplayID: [AppSnapshot]] = [:]
-        var seenByDisplay: [CGDirectDisplayID: Set<pid_t>] = [:]
-        for displayID in displayIDs {
-            appsByDisplay[displayID] = []
-            seenByDisplay[displayID] = []
-        }
-
-        var frontmostDisplayID: CGDirectDisplayID?
-
-        if let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
-            for windowInfo in windowList {
-                guard let ownerPIDNumber = windowInfo[kCGWindowOwnerPID as String] as? NSNumber else {
-                    continue
-                }
-                let processID = pid_t(ownerPIDNumber.int32Value)
-
-                if let layerNumber = windowInfo[kCGWindowLayer as String] as? NSNumber, layerNumber.intValue != 0 {
-                    continue
-                }
-
-                if let alphaNumber = windowInfo[kCGWindowAlpha as String] as? NSNumber, alphaNumber.doubleValue <= 0 {
-                    continue
-                }
-
-                guard let boundsDictionary = windowInfo[kCGWindowBounds as String] as? NSDictionary,
-                      let windowBounds = CGRect(dictionaryRepresentation: boundsDictionary),
-                      !windowBounds.isEmpty,
-                      let runningApplication = NSRunningApplication(processIdentifier: processID),
-                      runningApplication.activationPolicy == .regular else {
-                    continue
-                }
-
-                let appName = runningApplication.localizedName
-                    ?? (windowInfo[kCGWindowOwnerName as String] as? String)
-                    ?? "Unknown App"
-                let windowTitle = (windowInfo[kCGWindowName as String] as? String)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let displayName = (windowTitle?.isEmpty == false) ? windowTitle! : appName
-
-                for displayID in displayIDs {
-                    guard let displayBounds = displayBoundsByID[displayID], displayBounds.intersects(windowBounds) else {
-                        continue
-                    }
-
-                    if seenByDisplay[displayID, default: []].insert(processID).inserted {
-                        appsByDisplay[displayID, default: []].append(AppSnapshot(processID: processID, name: displayName))
-                    } else if let windowTitle,
-                              !windowTitle.isEmpty,
-                              var snapshots = appsByDisplay[displayID],
-                              let snapshotIndex = snapshots.firstIndex(where: { $0.processID == processID }),
-                              snapshots[snapshotIndex].name == appName {
-                        snapshots[snapshotIndex] = AppSnapshot(processID: processID, name: windowTitle)
-                        appsByDisplay[displayID] = snapshots
-                    }
-
-                    if processID == frontmostPID, frontmostDisplayID == nil {
-                        frontmostDisplayID = displayID
-                    }
-                }
-            }
-        }
-
-        appendMinimizedApps(
-            appsByDisplay: &appsByDisplay,
-            seenByDisplay: &seenByDisplay,
-            displayIDs: displayIDs,
-            displayBoundsByID: displayBoundsByID
-        )
-
-        if frontmostDisplayID == nil, let frontmostPID {
-            frontmostDisplayID = displayIDs.first { displayID in
-                appsByDisplay[displayID, default: []].contains(where: { $0.processID == frontmostPID })
-            }
-        }
-
-        var nextDisplayStates: [DisplayState] = []
-        for screen in screens {
-            guard let displayID = screen.displayID else {
-                continue
-            }
-
-            let orderedSnapshots = appOrderManager.applyStableOrder(
-                for: displayID,
-                snapshots: appsByDisplay[displayID, default: []]
-            )
-
-            let apps = orderedSnapshots.map { snapshot in
-                RunningAppItem(
-                    processID: snapshot.processID,
-                    name: snapshot.name,
-                    isFrontmost: snapshot.processID == frontmostPID && displayID == frontmostDisplayID
-                )
-            }
-
-            nextDisplayStates.append(
-                DisplayState(
-                    id: displayID,
-                    frame: screen.frame,
-                    apps: apps
-                )
-            )
-        }
-
-        displayStates = nextDisplayStates
+        displayStates = displayStateBuilder.buildDisplayStates()
     }
 
     private func refreshLaunchableApplications() {
         launchableApplications = installedApplicationProvider.fetchInstalledApplications()
-    }
-
-    private func appendMinimizedApps(
-        appsByDisplay: inout [CGDirectDisplayID: [AppSnapshot]],
-        seenByDisplay: inout [CGDirectDisplayID: Set<pid_t>],
-        displayIDs: [CGDirectDisplayID],
-        displayBoundsByID: [CGDirectDisplayID: CGRect]
-    ) {
-        guard AXIsProcessTrusted() else {
-            return
-        }
-
-        for app in NSWorkspace.shared.runningApplications {
-            let processID = app.processIdentifier
-            guard !app.isTerminated,
-                  app.activationPolicy == .regular else {
-                continue
-            }
-
-            let appElement = AXUIElementCreateApplication(processID)
-            guard let windows = AXElementInspector.windows(from: appElement),
-                  !windows.isEmpty else {
-                continue
-            }
-
-            let appName = app.localizedName ?? "Unknown App"
-            for window in windows {
-                guard AXElementInspector.isWindowMinimized(window),
-                      let windowFrame = AXElementInspector.frame(of: window),
-                      !windowFrame.isEmpty else {
-                    continue
-                }
-
-                let windowTitle = AXElementInspector.stringAttributeValue(of: AXAttributeName.title, from: window)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let displayName = (windowTitle?.isEmpty == false) ? windowTitle! : appName
-
-                for displayID in displayIDs {
-                    guard let displayBounds = displayBoundsByID[displayID],
-                          displayBounds.intersects(windowFrame) else {
-                        continue
-                    }
-
-                    if seenByDisplay[displayID, default: []].insert(processID).inserted {
-                        appsByDisplay[displayID, default: []].append(
-                            AppSnapshot(processID: processID, name: displayName)
-                        )
-                    }
-                }
-            }
-        }
     }
 
     private func restoreFirstMinimizedWindowIfNoVisibleWindow(of processID: pid_t) -> Bool {
@@ -707,11 +336,13 @@ final class BarManager: ObservableObject {
                 continue
             }
 
-            if let layerNumber = windowInfo[kCGWindowLayer as String] as? NSNumber, layerNumber.intValue != 0 {
+            if let layerNumber = windowInfo[kCGWindowLayer as String] as? NSNumber,
+               layerNumber.intValue != 0 {
                 continue
             }
 
-            if let alphaNumber = windowInfo[kCGWindowAlpha as String] as? NSNumber, alphaNumber.doubleValue <= 0 {
+            if let alphaNumber = windowInfo[kCGWindowAlpha as String] as? NSNumber,
+               alphaNumber.doubleValue <= 0 {
                 continue
             }
 
@@ -725,48 +356,5 @@ final class BarManager: ObservableObject {
         }
 
         return false
-    }
-}
-
-private struct AppSnapshot {
-    let processID: pid_t
-    let name: String
-}
-
-/// Keeps each display's app order stable after startup so UI updates only perform minimal movement.
-private final class AppOrderManager {
-    private var orderByDisplay: [CGDirectDisplayID: [pid_t]] = [:]
-
-    func syncActiveDisplays(_ activeDisplayIDs: Set<CGDirectDisplayID>) {
-        orderByDisplay = orderByDisplay.filter { activeDisplayIDs.contains($0.key) }
-    }
-
-    func applyStableOrder(for displayID: CGDirectDisplayID, snapshots: [AppSnapshot]) -> [AppSnapshot] {
-        if snapshots.isEmpty {
-            return []
-        }
-
-        let visibleByPID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.processID, $0) })
-        let visiblePIDs = snapshots.map(\.processID)
-
-        if orderByDisplay[displayID] == nil {
-            orderByDisplay[displayID] = visiblePIDs
-            return snapshots
-        }
-
-        var storedOrder = orderByDisplay[displayID] ?? []
-        let visiblePIDSet = Set(visiblePIDs)
-        var orderedVisiblePIDs = storedOrder.filter(visiblePIDSet.contains)
-
-        let storedPIDSet = Set(storedOrder)
-        let newPIDs = visiblePIDs.filter { !storedPIDSet.contains($0) }
-        orderedVisiblePIDs.append(contentsOf: newPIDs)
-
-        if !newPIDs.isEmpty {
-            storedOrder.append(contentsOf: newPIDs)
-            orderByDisplay[displayID] = storedOrder
-        }
-
-        return orderedVisiblePIDs.compactMap { visibleByPID[$0] }
     }
 }

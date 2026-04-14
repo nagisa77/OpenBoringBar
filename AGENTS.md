@@ -33,6 +33,10 @@ OpenBoringBar/
       AppRuntimeCoordinator.swift
       AppEventBus.swift
     Bar/
+      BarAccessibilityObserverManager.swift
+      BarAppSnapshot.swift
+      BarDisplayAppOrderManager.swift
+      BarDisplayStateBuilder.swift
       BarManager.swift
       ActiveWindowBottomGuardManager.swift
       BarLayoutConstants.swift
