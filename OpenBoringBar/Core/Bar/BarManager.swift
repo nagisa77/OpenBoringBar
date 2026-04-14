@@ -142,6 +142,35 @@ final class BarManager: ObservableObject {
         }
     }
 
+    func activateWindow(
+        processID: pid_t,
+        windowID: CGWindowID
+    ) {
+        let previousFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+
+        let didActivateSpecificWindow = windowPreviewProvider.activateWindow(
+            windowID: windowID,
+            processID: processID
+        )
+
+        guard didActivateSpecificWindow else {
+            activate(processID: processID)
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let currentFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            if previousFrontmostPID != processID, currentFrontmostPID == processID {
+                self.eventBus.post(.capsuleAppSwitchConfirmed(processID: processID))
+            }
+            self.refreshDisplayStates()
+        }
+    }
+
     func windowPreviews(
         for processID: pid_t,
         on displayID: CGDirectDisplayID

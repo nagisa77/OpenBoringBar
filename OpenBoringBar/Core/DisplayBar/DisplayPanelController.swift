@@ -7,7 +7,6 @@ final class DisplayPanelController {
     private var panelStateCancellable: AnyCancellable?
     private var windowsByDisplayID: [CGDirectDisplayID: DisplayPanelWindow] = [:]
     private var previewContextsByDisplayID: [CGDirectDisplayID: DisplayPreviewContext] = [:]
-    private var appNamesByDisplayID: [CGDirectDisplayID: [pid_t: String]] = [:]
 
     init(barManager: BarManager) {
         self.barManager = barManager
@@ -46,8 +45,6 @@ final class DisplayPanelController {
         for displayID in Array(previewContextsByDisplayID.keys) {
             closePreviewContext(for: displayID)
         }
-
-        appNamesByDisplayID.removeAll()
     }
 
     private func syncPanels(
@@ -66,16 +63,10 @@ final class DisplayPanelController {
             closePreviewContext(for: displayID)
         }
 
-        appNamesByDisplayID = appNamesByDisplayID.filter { activeDisplayIDs.contains($0.key) }
-
         for state in states {
             guard let screen = NSScreen.screens.first(where: { $0.displayID == state.id }) else {
                 continue
             }
-
-            appNamesByDisplayID[state.id] = Dictionary(
-                uniqueKeysWithValues: state.apps.map { ($0.processID, $0.name) }
-            )
 
             let panel = panelForDisplay(state.id)
             updateFrame(of: panel, in: screen)
@@ -265,6 +256,21 @@ final class DisplayPanelController {
         }
     }
 
+    private func handlePreviewWindowSelection(
+        displayID: CGDirectDisplayID,
+        processID: pid_t,
+        windowID: CGWindowID
+    ) {
+        guard previewContextsByDisplayID[displayID] != nil else {
+            return
+        }
+
+        barManager.activateWindow(
+            processID: processID,
+            windowID: windowID
+        )
+    }
+
     private func schedulePreviewShow(
         for displayID: CGDirectDisplayID,
         context: DisplayPreviewContext
@@ -302,8 +308,7 @@ final class DisplayPanelController {
             on: displayID
         )
 
-        let appName = appNamesByDisplayID[displayID]?[hoverTarget.processID]
-            ?? NSRunningApplication(processIdentifier: hoverTarget.processID)?.localizedName
+        let appName = NSRunningApplication(processIdentifier: hoverTarget.processID)?.localizedName
             ?? "Application"
 
         let desiredWidth = previewPanelWidth(forWindowCount: previews.count)
@@ -316,6 +321,7 @@ final class DisplayPanelController {
         updatePreviewPanelContent(
             of: context.panel,
             displayID: displayID,
+            processID: hoverTarget.processID,
             appName: appName,
             previews: previews
         )
@@ -357,6 +363,7 @@ final class DisplayPanelController {
     private func updatePreviewPanelContent(
         of panel: AppWindowPreviewPanelWindow,
         displayID: CGDirectDisplayID,
+        processID: pid_t,
         appName: String,
         previews: [AppWindowPreviewItem]
     ) {
@@ -368,6 +375,13 @@ final class DisplayPanelController {
                     self?.handlePreviewHoverChanged(
                         displayID: displayID,
                         isHovering: isHovering
+                    )
+                },
+                onSelectWindow: { [weak self] windowID in
+                    self?.handlePreviewWindowSelection(
+                        displayID: displayID,
+                        processID: processID,
+                        windowID: windowID
                     )
                 }
             )

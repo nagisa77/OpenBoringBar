@@ -35,8 +35,6 @@ pod install
 xcodebuild -project OpenBoringBar.xcodeproj -scheme OpenBoringBar -configuration Debug -sdk macosx -destination 'platform=macOS' build
 ```
 
-
-
 ## License
 
 OpenBoringBar is released under the MIT License. See [LICENSE](./LICENSE) for details.
