@@ -16,8 +16,13 @@ enum AXNotificationName {
     static let focusedWindowChanged = "AXFocusedWindowChanged"
     static let mainWindowChanged = "AXMainWindowChanged"
     static let windowCreated = "AXWindowCreated"
+    static let windowMiniaturized = "AXWindowMiniaturized"
+    static let windowDeminiaturized = "AXWindowDeminiaturized"
     static let moved = "AXMoved"
     static let resized = "AXResized"
+    static let titleChanged = "AXTitleChanged"
+    static let applicationHidden = "AXApplicationHidden"
+    static let applicationShown = "AXApplicationShown"
     static let uiElementDestroyed = "AXUIElementDestroyed"
 }
 

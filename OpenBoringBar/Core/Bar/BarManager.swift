@@ -6,13 +6,30 @@ final class BarManager: ObservableObject {
     @Published private(set) var displayStates: [DisplayState]
     @Published private(set) var launchableApplications: [LaunchableApplicationItem]
 
+    private static let axObserverCallback: AXObserverCallback = { _, element, notification, refcon in
+        guard let refcon else {
+            return
+        }
+
+        let manager = Unmanaged<BarManager>
+            .fromOpaque(refcon)
+            .takeUnretainedValue()
+        manager.handleAccessibilityNotification(
+            element: element,
+            notification: notification as String
+        )
+    }
+
     private let appOrderManager: AppOrderManager
     private let eventBus: AppEventBus
     private let installedApplicationProvider: InstalledApplicationProviding
     private let windowPreviewProvider: WindowPreviewProviding
     private var displayObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol]
-    private var refreshTimer: Timer?
+    private var observerByPID: [pid_t: AXObserver]
+    private var appElementByPID: [pid_t: AXUIElement]
+    private var pendingRefreshWorkItem: DispatchWorkItem?
+    private let refreshDebounceInterval: TimeInterval = 0.10
 
     init(
         eventBus: AppEventBus,
@@ -26,57 +43,27 @@ final class BarManager: ObservableObject {
         self.installedApplicationProvider = installedApplicationProvider
         self.windowPreviewProvider = windowPreviewProvider
         self.workspaceObservers = []
+        self.observerByPID = [:]
+        self.appElementByPID = [:]
 
-        displayObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.refreshDisplayStates()
-        }
-
-        workspaceObservers = [
-            NotificationCenter.default.addObserver(
-                forName: NSWorkspace.didActivateApplicationNotification,
-                object: NSWorkspace.shared,
-                queue: .main
-            ) { [weak self] _ in
-                self?.refreshDisplayStates()
-            },
-            NotificationCenter.default.addObserver(
-                forName: NSWorkspace.didLaunchApplicationNotification,
-                object: NSWorkspace.shared,
-                queue: .main
-            ) { [weak self] _ in
-                self?.refreshDisplayStates()
-            },
-            NotificationCenter.default.addObserver(
-                forName: NSWorkspace.didTerminateApplicationNotification,
-                object: NSWorkspace.shared,
-                queue: .main
-            ) { [weak self] _ in
-                self?.refreshDisplayStates()
-            }
-        ]
-
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            self?.refreshDisplayStates()
-        }
+        configureDisplayObserver()
+        configureWorkspaceObservers()
+        installObserversForRunningApps()
 
         refreshDisplayStates()
         refreshLaunchableApplications()
     }
 
     deinit {
+        pendingRefreshWorkItem?.cancel()
+        pendingRefreshWorkItem = nil
+        teardownAllAXObservers()
+
         if let displayObserver {
             NotificationCenter.default.removeObserver(displayObserver)
         }
 
-        for observer in workspaceObservers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-
-        refreshTimer?.invalidate()
+        teardownWorkspaceObservers()
     }
 
     func activate(processID: pid_t) {
@@ -179,6 +166,307 @@ final class BarManager: ObservableObject {
             for: processID,
             displayID: displayID
         )
+    }
+
+    private func configureDisplayObserver() {
+        displayObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleDisplayRefresh()
+        }
+    }
+
+    private func configureWorkspaceObservers() {
+        workspaceObservers = [
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleDisplayRefresh()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didLaunchApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self else {
+                    return
+                }
+
+                if let app = self.runningApplication(from: notification) {
+                    self.installObserverIfNeeded(for: app)
+                }
+                self.scheduleDisplayRefresh()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self else {
+                    return
+                }
+
+                if let app = self.runningApplication(from: notification) {
+                    self.removeObserver(for: app.processIdentifier)
+                }
+                self.scheduleDisplayRefresh()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didHideApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleDisplayRefresh()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.didUnhideApplicationNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleDisplayRefresh()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWorkspace.activeSpaceDidChangeNotification,
+                object: NSWorkspace.shared,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleDisplayRefresh()
+            }
+        ]
+    }
+
+    private func teardownWorkspaceObservers() {
+        for observer in workspaceObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        workspaceObservers.removeAll()
+    }
+
+    private func scheduleDisplayRefresh() {
+        pendingRefreshWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.pendingRefreshWorkItem = nil
+            self.refreshDisplayStates()
+        }
+
+        pendingRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + refreshDebounceInterval, execute: workItem)
+    }
+
+    private func installObserversForRunningApps() {
+        guard AXIsProcessTrusted() else {
+            return
+        }
+
+        for app in NSWorkspace.shared.runningApplications {
+            installObserverIfNeeded(for: app)
+        }
+    }
+
+    private func installObserverIfNeeded(for app: NSRunningApplication) {
+        guard AXIsProcessTrusted() else {
+            return
+        }
+
+        let processID = app.processIdentifier
+        guard processID != ProcessInfo.processInfo.processIdentifier,
+              !app.isTerminated,
+              app.activationPolicy == .regular else {
+            return
+        }
+
+        guard observerByPID[processID] == nil else {
+            return
+        }
+
+        var observer: AXObserver?
+        let createResult = AXObserverCreate(
+            processID,
+            Self.axObserverCallback,
+            &observer
+        )
+
+        guard createResult == .success, let observer else {
+            return
+        }
+
+        let appElement = AXUIElementCreateApplication(processID)
+        observerByPID[processID] = observer
+        appElementByPID[processID] = appElement
+
+        CFRunLoopAddSource(
+            CFRunLoopGetMain(),
+            AXObserverGetRunLoopSource(observer),
+            .commonModes
+        )
+
+        registerAppLevelNotifications(
+            observer: observer,
+            appElement: appElement
+        )
+        registerWindowLevelNotifications(processID: processID)
+    }
+
+    private func removeObserver(for processID: pid_t) {
+        guard let observer = observerByPID.removeValue(forKey: processID) else {
+            appElementByPID.removeValue(forKey: processID)
+            return
+        }
+
+        CFRunLoopRemoveSource(
+            CFRunLoopGetMain(),
+            AXObserverGetRunLoopSource(observer),
+            .commonModes
+        )
+        appElementByPID.removeValue(forKey: processID)
+    }
+
+    private func teardownAllAXObservers() {
+        let processIDs = Array(observerByPID.keys)
+        for processID in processIDs {
+            removeObserver(for: processID)
+        }
+    }
+
+    private func registerAppLevelNotifications(
+        observer: AXObserver,
+        appElement: AXUIElement
+    ) {
+        registerNotification(
+            AXNotificationName.focusedWindowChanged,
+            observer: observer,
+            element: appElement
+        )
+        registerNotification(
+            AXNotificationName.mainWindowChanged,
+            observer: observer,
+            element: appElement
+        )
+        registerNotification(
+            AXNotificationName.windowCreated,
+            observer: observer,
+            element: appElement
+        )
+        registerNotification(
+            AXNotificationName.applicationHidden,
+            observer: observer,
+            element: appElement
+        )
+        registerNotification(
+            AXNotificationName.applicationShown,
+            observer: observer,
+            element: appElement
+        )
+    }
+
+    private func registerWindowLevelNotifications(processID: pid_t) {
+        guard let appElement = appElementByPID[processID],
+              let observer = observerByPID[processID],
+              let windows = AXElementInspector.windows(from: appElement) else {
+            return
+        }
+
+        for window in windows {
+            registerNotification(
+                AXNotificationName.moved,
+                observer: observer,
+                element: window
+            )
+            registerNotification(
+                AXNotificationName.resized,
+                observer: observer,
+                element: window
+            )
+            registerNotification(
+                AXNotificationName.titleChanged,
+                observer: observer,
+                element: window
+            )
+            registerNotification(
+                AXNotificationName.windowMiniaturized,
+                observer: observer,
+                element: window
+            )
+            registerNotification(
+                AXNotificationName.windowDeminiaturized,
+                observer: observer,
+                element: window
+            )
+            registerNotification(
+                AXNotificationName.uiElementDestroyed,
+                observer: observer,
+                element: window
+            )
+        }
+    }
+
+    private func registerNotification(
+        _ notification: String,
+        observer: AXObserver,
+        element: AXUIElement
+    ) {
+        let result = AXObserverAddNotification(
+            observer,
+            element,
+            notification as CFString,
+            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        )
+
+        if result == .success || result == .notificationAlreadyRegistered {
+            return
+        }
+    }
+
+    private func handleAccessibilityNotification(
+        element: AXUIElement,
+        notification: String
+    ) {
+        guard let processID = processID(of: element) else {
+            return
+        }
+
+        switch notification {
+        case AXNotificationName.windowCreated,
+             AXNotificationName.focusedWindowChanged,
+             AXNotificationName.mainWindowChanged:
+            registerWindowLevelNotifications(processID: processID)
+            scheduleDisplayRefresh()
+
+        case AXNotificationName.moved,
+             AXNotificationName.resized,
+             AXNotificationName.titleChanged,
+             AXNotificationName.windowMiniaturized,
+             AXNotificationName.windowDeminiaturized,
+             AXNotificationName.applicationHidden,
+             AXNotificationName.applicationShown,
+             AXNotificationName.uiElementDestroyed:
+            scheduleDisplayRefresh()
+
+        default:
+            break
+        }
+    }
+
+    private func runningApplication(from notification: Notification) -> NSRunningApplication? {
+        notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+    }
+
+    private func processID(of element: AXUIElement) -> pid_t? {
+        var processID: pid_t = 0
+        let result = AXUIElementGetPid(element, &processID)
+        guard result == .success else {
+            return nil
+        }
+        return processID
     }
 
     private func minimizeFocusedWindow(of processID: pid_t) -> Bool {
