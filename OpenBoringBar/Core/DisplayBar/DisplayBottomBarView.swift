@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+private enum DisplayBottomBarAnimation {
+    static let contentSwap = Animation.easeInOut(duration: 0.2)
+    static let appListMutation = Animation.spring(response: 0.28, dampingFraction: 0.86)
+    static let appStateChange = Animation.easeInOut(duration: 0.16)
+    static let pillHover = Animation.easeOut(duration: 0.12)
+    static let launcherToggle = Animation.spring(response: 0.24, dampingFraction: 0.8)
+}
+
 struct DisplayBottomBarView: View {
     let apps: [RunningAppItem]
     let launchableApplications: [LaunchableApplicationItem]
@@ -9,6 +17,10 @@ struct DisplayBottomBarView: View {
     let onAppHoverChanged: (pid_t?, CGRect?) -> Void
 
     @State private var isApplicationLauncherPresented = false
+
+    private var appLayoutAnimationKeys: [String] {
+        apps.map { "\($0.processID)-\($0.name)" }
+    }
 
     var body: some View {
         ZStack {
@@ -25,48 +37,90 @@ struct DisplayBottomBarView: View {
                 Divider()
                     .padding(.vertical, 9)
 
-                if apps.isEmpty {
-                    Text("该显示器暂无可见窗口")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.trailing, 10)
-                } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 5) {
-                            ForEach(apps, id: \.self) { app in
-                                DisplayBarAppPill(
-                                    app: app,
-                                    onSwitch: onSwitch,
-                                    onHoverChanged: onAppHoverChanged
+                Group {
+                    if apps.isEmpty {
+                        Text("该显示器暂无可见窗口")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.trailing, 10)
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                    removal: .opacity
                                 )
+                            )
+                    } else {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 5) {
+                                ForEach(apps) { app in
+                                    DisplayBarAppPill(
+                                        app: app,
+                                        onSwitch: onSwitch,
+                                        onHoverChanged: onAppHoverChanged
+                                    )
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .opacity.combined(with: .scale(scale: 0.92)),
+                                            removal: .opacity
+                                        )
+                                    )
+                                }
                             }
+                            .padding(.trailing, 10)
                         }
-                        .padding(.trailing, 10)
+                        .scrollBounceBehavior(.basedOnSize)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                removal: .opacity
+                            )
+                        )
                     }
-                    .scrollBounceBehavior(.basedOnSize)
                 }
             }
             .padding(.leading, 8)
+            .animation(
+                DisplayBottomBarAnimation.contentSwap,
+                value: apps.isEmpty
+            )
+            .animation(
+                DisplayBottomBarAnimation.appListMutation,
+                value: appLayoutAnimationKeys
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var applicationLauncherButton: some View {
         Button {
-            isApplicationLauncherPresented.toggle()
+            withAnimation(DisplayBottomBarAnimation.launcherToggle) {
+                isApplicationLauncherPresented.toggle()
+            }
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.12))
+                    .fill(
+                        Color.white.opacity(
+                            isApplicationLauncherPresented ? 0.2 : 0.12
+                        )
+                    )
 
                 Image(systemName: "square.grid.2x2")
                     .font(.system(size: BarLayoutConstants.launcherBaseFontSize, weight: .semibold))
                     .foregroundStyle(.primary)
+                    .rotationEffect(
+                        .degrees(isApplicationLauncherPresented ? 8 : 0)
+                    )
+                    .scaleEffect(isApplicationLauncherPresented ? 0.94 : 1)
             }
             .frame(
                 width: BarLayoutConstants.launcherButtonSize,
                 height: BarLayoutConstants.launcherButtonSize
+            )
+            .animation(
+                DisplayBottomBarAnimation.launcherToggle,
+                value: isApplicationLauncherPresented
             )
         }
         .buttonStyle(.plain)
@@ -91,6 +145,8 @@ private struct DisplayBarAppPill: View {
     let onSwitch: (pid_t) -> Void
     let onHoverChanged: (pid_t?, CGRect?) -> Void
 
+    @State private var isHovering = false
+
     var body: some View {
         Button(action: { onSwitch(app.processID) }) {
             HStack(spacing: 8) {
@@ -102,6 +158,7 @@ private struct DisplayBarAppPill: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: Self.appNameMaxWidth, alignment: .leading)
+                    .contentTransition(.opacity)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
@@ -123,9 +180,20 @@ private struct DisplayBarAppPill: View {
                         lineWidth: 1
                     )
             )
+            .scaleEffect(isHovering ? 1.02 : 1)
+            .shadow(
+                color: Color.black.opacity(isHovering ? 0.2 : 0),
+                radius: isHovering ? 9 : 0,
+                x: 0,
+                y: 4
+            )
             .background(
-                DisplayBarPillHoverTrackingArea { isHovering, frameInScreen in
-                    if isHovering {
+                DisplayBarPillHoverTrackingArea { hovering, frameInScreen in
+                    withAnimation(DisplayBottomBarAnimation.pillHover) {
+                        isHovering = hovering
+                    }
+
+                    if hovering {
                         onHoverChanged(app.processID, frameInScreen)
                     } else {
                         onHoverChanged(nil, nil)
@@ -134,6 +202,14 @@ private struct DisplayBarAppPill: View {
             )
         }
         .buttonStyle(.plain)
+        .animation(
+            DisplayBottomBarAnimation.appStateChange,
+            value: app.isFrontmost
+        )
+        .animation(
+            DisplayBottomBarAnimation.appListMutation,
+            value: app.name
+        )
     }
 }
 
