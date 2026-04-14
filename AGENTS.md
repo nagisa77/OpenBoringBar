@@ -37,12 +37,16 @@ OpenBoringBar/
       ActiveWindowBottomGuardManager.swift
       BarLayoutConstants.swift
     DisplayBar/
+      ApplicationLauncherPopoverView.swift
       DisplayPanelController.swift
       DisplayBottomBarView.swift
     Domain/
       Models/
         BarModels.swift
+        LaunchableApplicationItem.swift
     Infrastructure/
+      Application/
+        InstalledApplicationProvider.swift
       Accessibility/
         AXElementInspector.swift
       Screen/
@@ -124,6 +128,7 @@ After every code change:
    - Permission setup flow.
    - Multi-display bar create/remove.
    - App switch from capsule.
+   - Application launcher open/search/launch.
    - Bottom guard behavior for frontmost window.
 
 ## Documentation Freshness Policy (Strict)

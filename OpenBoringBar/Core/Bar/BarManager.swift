@@ -4,17 +4,24 @@ import Combine
 
 final class BarManager: ObservableObject {
     @Published private(set) var displayStates: [DisplayState]
+    @Published private(set) var launchableApplications: [LaunchableApplicationItem]
 
     private let appOrderManager: AppOrderManager
     private let eventBus: AppEventBus
+    private let installedApplicationProvider: InstalledApplicationProviding
     private var displayObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol]
     private var refreshTimer: Timer?
 
-    init(eventBus: AppEventBus) {
+    init(
+        eventBus: AppEventBus,
+        installedApplicationProvider: InstalledApplicationProviding = InstalledApplicationProvider()
+    ) {
         self.displayStates = []
+        self.launchableApplications = []
         self.appOrderManager = AppOrderManager()
         self.eventBus = eventBus
+        self.installedApplicationProvider = installedApplicationProvider
         self.workspaceObservers = []
 
         displayObserver = NotificationCenter.default.addObserver(
@@ -54,6 +61,7 @@ final class BarManager: ObservableObject {
         }
 
         refreshDisplayStates()
+        refreshLaunchableApplications()
     }
 
     deinit {
@@ -118,6 +126,16 @@ final class BarManager: ObservableObject {
                 self.eventBus.post(.capsuleAppSwitchConfirmed(processID: processID))
             }
             self.refreshDisplayStates()
+        }
+    }
+
+    func openApplication(bundleURL: URL) {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+
+        NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { [weak self] _, _ in
+            self?.refreshDisplayStates()
         }
     }
 
@@ -264,6 +282,10 @@ final class BarManager: ObservableObject {
         }
 
         displayStates = nextDisplayStates
+    }
+
+    private func refreshLaunchableApplications() {
+        launchableApplications = installedApplicationProvider.fetchInstalledApplications()
     }
 
     private func appendMinimizedApps(

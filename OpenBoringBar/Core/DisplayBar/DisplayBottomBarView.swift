@@ -3,7 +3,11 @@ import SwiftUI
 
 struct DisplayBottomBarView: View {
     let apps: [RunningAppItem]
+    let launchableApplications: [LaunchableApplicationItem]
     let onSwitch: (pid_t) -> Void
+    let onOpenApplication: (URL) -> Void
+
+    @State private var isApplicationLauncherPresented = false
 
     var body: some View {
         ZStack {
@@ -14,28 +18,67 @@ struct DisplayBottomBarView: View {
                         .stroke(Color.white.opacity(0.55), lineWidth: 1)
                 )
 
-            if apps.isEmpty {
-                Text("该显示器暂无可见窗口")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        ForEach(apps, id: \.self) { app in
-                            DisplayBarAppPill(
-                                app: app,
-                                onSwitch: onSwitch
-                            )
+            HStack(spacing: 8) {
+                applicationLauncherButton
+
+                Divider()
+                    .padding(.vertical, 9)
+
+                if apps.isEmpty {
+                    Text("该显示器暂无可见窗口")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, 10)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 5) {
+                            ForEach(apps, id: \.self) { app in
+                                DisplayBarAppPill(
+                                    app: app,
+                                    onSwitch: onSwitch
+                                )
+                            }
                         }
+                        .padding(.trailing, 10)
                     }
-                    .padding(.horizontal, 10)
+                    .scrollBounceBehavior(.basedOnSize)
                 }
-                .scrollBounceBehavior(.basedOnSize)
             }
+            .padding(.leading, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var applicationLauncherButton: some View {
+        Button {
+            isApplicationLauncherPresented.toggle()
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.12))
+
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: BarLayoutConstants.launcherBaseFontSize, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+            .frame(
+                width: BarLayoutConstants.launcherButtonSize,
+                height: BarLayoutConstants.launcherButtonSize
+            )
+        }
+        .buttonStyle(.plain)
+        .popover(
+            isPresented: $isApplicationLauncherPresented,
+            attachmentAnchor: .point(.topLeading),
+            arrowEdge: .bottom
+        ) {
+            ApplicationLauncherPopoverView(applications: launchableApplications) { app in
+                isApplicationLauncherPresented = false
+                onOpenApplication(app.bundleURL)
+            }
+            .padding(8)
+        }
     }
 }
 

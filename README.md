@@ -7,6 +7,7 @@ OpenBoringBar is an open-source alternative to [boringbar.app](https://boringbar
 - One bottom bar per display.
 - Clear running/visible app representation.
 - Fast app switching from the bar.
+- Left-side launcher button with searchable application open panel.
 - Stability and maintainability before visual complexity.
 
 ## Requirements
@@ -50,12 +51,16 @@ OpenBoringBar/
 │   │   ├── BarLayoutConstants.swift
 │   │   └── BarManager.swift
 │   ├── DisplayBar
+│   │   ├── ApplicationLauncherPopoverView.swift
 │   │   ├── DisplayBottomBarView.swift
 │   │   └── DisplayPanelController.swift
 │   ├── Domain
 │   │   └── Models
-│   │       └── BarModels.swift
+│   │       ├── BarModels.swift
+│   │       └── LaunchableApplicationItem.swift
 │   └── Infrastructure
+│       ├── Application
+│       │   └── InstalledApplicationProvider.swift
 │       ├── Accessibility
 │       │   └── AXElementInspector.swift
 │       └── Screen

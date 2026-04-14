@@ -4,7 +4,7 @@ import SwiftUI
 
 final class DisplayPanelController {
     private let barManager: BarManager
-    private var displayStateCancellable: AnyCancellable?
+    private var panelStateCancellable: AnyCancellable?
     private var windowsByDisplayID: [CGDirectDisplayID: DisplayPanelWindow] = [:]
 
     init(barManager: BarManager) {
@@ -12,22 +12,28 @@ final class DisplayPanelController {
     }
 
     func start() {
-        guard displayStateCancellable == nil else {
+        guard panelStateCancellable == nil else {
             return
         }
 
-        displayStateCancellable = barManager.$displayStates
+        panelStateCancellable = Publishers.CombineLatest(
+            barManager.$displayStates,
+            barManager.$launchableApplications
+        )
             .receive(on: RunLoop.main)
-            .sink { [weak self] states in
-                self?.syncPanels(with: states)
+            .sink { [weak self] states, launchableApplications in
+                self?.syncPanels(with: states, launchableApplications: launchableApplications)
             }
 
-        syncPanels(with: barManager.displayStates)
+        syncPanels(
+            with: barManager.displayStates,
+            launchableApplications: barManager.launchableApplications
+        )
     }
 
     func stop() {
-        displayStateCancellable?.cancel()
-        displayStateCancellable = nil
+        panelStateCancellable?.cancel()
+        panelStateCancellable = nil
 
         for panel in windowsByDisplayID.values {
             panel.orderOut(nil)
@@ -36,7 +42,10 @@ final class DisplayPanelController {
         windowsByDisplayID.removeAll()
     }
 
-    private func syncPanels(with states: [DisplayState]) {
+    private func syncPanels(
+        with states: [DisplayState],
+        launchableApplications: [LaunchableApplicationItem]
+    ) {
         let activeDisplayIDs = Set(states.map(\.id))
 
         for (displayID, panel) in windowsByDisplayID where !activeDisplayIDs.contains(displayID) {
@@ -52,7 +61,11 @@ final class DisplayPanelController {
 
             let panel = panelForDisplay(state.id)
             updateFrame(of: panel, in: screen)
-            updateContent(of: panel, with: state.apps)
+            updateContent(
+                of: panel,
+                with: state.apps,
+                launchableApplications: launchableApplications
+            )
             panel.orderFrontRegardless()
         }
     }
@@ -102,11 +115,17 @@ final class DisplayPanelController {
         }
     }
 
-    private func updateContent(of panel: DisplayPanelWindow, with apps: [RunningAppItem]) {
+    private func updateContent(
+        of panel: DisplayPanelWindow,
+        with apps: [RunningAppItem],
+        launchableApplications: [LaunchableApplicationItem]
+    ) {
         let content = AnyView(
             DisplayBottomBarView(
                 apps: apps,
-                onSwitch: barManager.activate(processID:)
+                launchableApplications: launchableApplications,
+                onSwitch: barManager.activate(processID:),
+                onOpenApplication: barManager.openApplication(bundleURL:)
             )
         )
 
