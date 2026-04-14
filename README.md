@@ -1,5 +1,9 @@
 # OpenBoringBar
 
+<p align="center">
+  <img src="docs/assets/app-icon.png" alt="OpenBoringBar App Icon" width="160" />
+</p>
+
 OpenBoringBar is an open-source alternative to [boringbar.app](https://boringbar.app), focused on delivering a practical macOS bottom taskbar experience for multi-display setups.
 
 ## Screenshots
