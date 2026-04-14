@@ -7,3 +7,4 @@ OpenBoringBar.xcodeproj/
 *.xcworkspace
 *.xcodeproj/project.xcworkspace/
 *.xcodeproj/xcuserdata/
+.codex/
