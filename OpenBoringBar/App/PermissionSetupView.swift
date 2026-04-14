@@ -5,7 +5,7 @@ struct PermissionSetupView: View {
 
     var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 header
                 requiredIntro
                 permissionCard
@@ -13,7 +13,7 @@ struct PermissionSetupView: View {
                 footer
             }
             .multilineTextAlignment(.leading)
-            .padding(24)
+            .padding(18)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .scrollBounceBehavior(.basedOnSize)
@@ -35,33 +35,33 @@ struct PermissionSetupView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
-            RoundedRectangle(cornerRadius: 10)
+        HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .quaternaryLabelColor))
-                .frame(width: 44, height: 44)
+                .frame(width: 36, height: 36)
                 .overlay {
                     Image(systemName: "shield.lefthalf.filled")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Allow Access for boringBar")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.title3.weight(.semibold))
 
                 Text("Set up permissions before the app can start.")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
     private var requiredIntro: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             sectionLabel("REQUIRED")
 
             Text("boringBar needs both permissions before it can start.")
-                .font(.system(size: 12, weight: .medium))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
     }
@@ -87,7 +87,7 @@ struct PermissionSetupView: View {
             )
 
             Divider()
-                .padding(.leading, 60)
+                .padding(.leading, 50)
 
             PermissionRow(
                 iconName: "display",
@@ -107,49 +107,49 @@ struct PermissionSetupView: View {
                 secondaryAction: permissionManager.openScreenRecordingSettings
             )
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .background(
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: 16)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: 16)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
         )
     }
 
     private var notesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             sectionLabel("NOTES")
 
             Text("If Screen Recording was just granted, macOS may require a restart.")
-                .font(.system(size: 12, weight: .medium))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text("1. Click Request Access for each missing permission.")
                 Text("2. If needed, use Open Settings to grant it manually.")
                 Text("3. Click Continue once both rows show Granted.")
                 Text("4. Accessibility entry must match bundle ID: \(Bundle.main.bundleIdentifier ?? "(unknown)")")
             }
-            .font(.system(size: 12, weight: .medium))
+            .font(.subheadline)
             .foregroundStyle(.secondary)
-            .padding(16)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 12)
                     .fill(Color(nsColor: .controlBackgroundColor))
             )
         }
     }
 
     private var footer: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Label(
                 permissionManager.allGranted ? "Permissions granted. Continue to launch." : "Grant both permissions to continue",
                 systemImage: permissionManager.allGranted ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
             )
-            .font(.system(size: 12, weight: .semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundStyle(permissionManager.allGranted ? Color.green : Color.orange)
 
             Spacer()
@@ -169,8 +169,8 @@ struct PermissionSetupView: View {
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 14, weight: .bold))
-            .tracking(1.2)
+            .font(.caption.weight(.bold))
+            .tracking(1.0)
             .foregroundStyle(.secondary)
     }
 }
@@ -187,44 +187,44 @@ private struct PermissionRow: View {
     let secondaryAction: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            RoundedRectangle(cornerRadius: 8)
+        HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 7)
                 .fill(Color(nsColor: .quaternaryLabelColor))
-                .frame(width: 34, height: 34)
+                .frame(width: 30, height: 30)
                 .overlay {
                     Image(systemName: iconName)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
                     Text(title)
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.headline)
 
                     PermissionBadge(granted: granted)
                 }
 
                 Text(description)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
 
                 Text(pathText)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
 
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Button(primaryTitle, action: primaryAction)
                         .buttonStyle(SetupButtonStyle(isPrimary: true))
 
                     Button(secondaryTitle, action: secondaryAction)
                         .buttonStyle(SetupButtonStyle(isPrimary: false))
                 }
-                .padding(.top, 2)
+                .padding(.top, 1)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -234,10 +234,10 @@ private struct PermissionBadge: View {
 
     var body: some View {
         Text(granted ? "Granted" : "Required")
-            .font(.system(size: 11, weight: .bold))
+            .font(.caption.weight(.bold))
             .foregroundStyle(granted ? Color.green : Color.orange)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
             .background(
                 Capsule()
                     .fill((granted ? Color.green : Color.orange).opacity(0.14))
@@ -252,12 +252,12 @@ private struct SetupButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(.callout.weight(.semibold))
             .foregroundStyle(foregroundColor)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 9)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(backgroundColor(isPressed: configuration.isPressed))
             )
     }
