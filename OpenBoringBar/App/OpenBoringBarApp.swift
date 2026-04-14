@@ -7,6 +7,7 @@ struct OpenBoringBarApp: App {
 
     private let setupMinHeight: CGFloat = 590
     private let runtimeMinHeight: CGFloat = 540
+    private let width: CGFloat = 500
 
     var body: some Scene {
         WindowGroup {
@@ -33,8 +34,10 @@ struct OpenBoringBarApp: App {
                     runtimeCoordinator.startBarManagerIfNeeded()
                 }
             }
-            .frame(minWidth: 920, minHeight: permissionManager.shouldPresentSetup ? setupMinHeight : runtimeMinHeight)
+            .frame(width: width, height: permissionManager.shouldPresentSetup ? setupMinHeight : runtimeMinHeight)
         }
+        .defaultSize(width: width, height: setupMinHeight)
+        .windowResizability(.contentSize)
     }
 }
 

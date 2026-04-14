@@ -21,17 +21,6 @@ OpenBoringBar is an open-source alternative to [boringbar.app](https://boringbar
 ![App Launcher Search](docs/screenshots/file-search.png)
 
 
-## Core Goals
-
-- One bottom bar per display.
-- Clear running/visible app representation.
-- Fast app switching from the bar.
-- Smooth capsule transitions for app state and list changes.
-- Hover preview panel (single reusable panel per display, supports multi-window apps).
-- Left-side launcher button with searchable application open panel.
-- Compact permission setup screen using native macOS text styles and tighter spacing.
-- Stability and maintainability before visual complexity.
-
 ## Requirements
 
 - macOS 14+
