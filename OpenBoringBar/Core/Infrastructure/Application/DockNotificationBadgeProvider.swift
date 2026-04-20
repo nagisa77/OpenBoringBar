@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import OSLog
 
 protocol DockNotificationBadgeProviding: AnyObject {
     var onBadgeStateChanged: (() -> Void)? { get set }
@@ -11,20 +12,32 @@ protocol DockNotificationBadgeProviding: AnyObject {
 }
 
 final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.openboringbar.app",
+        category: "DockNotificationBadgeProvider"
+    )
+
     private static let dockBundleIdentifier = "com.apple.dock"
-    private static let applicationDockItemSubrole = "AXApplicationDockItem"
+    private static let applicationDockItemSubrole = kAXApplicationDockItemSubrole as String
+    // Dock sometimes emits this undocumented notification in practice.
+    private static let undocumentedChildrenChangedNotification = "AXChildrenChanged"
 
     private static let dockElementNotifications = [
-        AXNotificationName.childrenChanged,
         AXNotificationName.valueChanged,
-        AXNotificationName.titleChanged
+        AXNotificationName.titleChanged,
+        AXNotificationName.layoutChanged,
+        AXNotificationName.selectedChildrenChanged,
+        AXNotificationName.created,
+        undocumentedChildrenChangedNotification
     ]
 
     private static let dockItemNotifications = [
         AXNotificationName.valueChanged,
         AXNotificationName.titleChanged,
-        AXNotificationName.childrenChanged,
-        AXNotificationName.uiElementDestroyed
+        AXNotificationName.layoutChanged,
+        AXNotificationName.created,
+        AXNotificationName.uiElementDestroyed,
+        undocumentedChildrenChangedNotification
     ]
 
     private static let observerCallback: AXObserverCallback = { _, element, notification, refcon in
@@ -48,6 +61,21 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
     private var dockElement: AXUIElement?
     private var observedDockItemElements: [AXUIElement] = []
     private var dockProcessID: pid_t?
+
+    private var latestBadgeSnapshot: [pid_t: Int] = [:]
+
+    private var watchdogWorkItem: DispatchWorkItem?
+    private var watchdogCurrentInterval: TimeInterval
+    private var watchdogActiveUntil: Date?
+
+    private let watchdogMinimumInterval: TimeInterval = 2
+    private let watchdogMaximumInterval: TimeInterval = 5
+    private let watchdogBackoffStep: TimeInterval = 1
+    private let watchdogActivityWindow: TimeInterval = 30
+
+    init() {
+        watchdogCurrentInterval = watchdogMinimumInterval
+    }
 
     deinit {
         stopObserving()
@@ -79,6 +107,9 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
 
         guard createResult == .success,
               let observer else {
+            Self.logger.debug(
+                "AXObserverCreate failed for Dock. result=\(createResult.rawValue, privacy: .public)"
+            )
             return
         }
 
@@ -101,9 +132,16 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
         )
 
         reloadDockItemObservers()
+
+        let snapshot = collectBadgeCountByProcessID()
+        latestBadgeSnapshot = snapshot
+        updateWatchdogState(afterReading: snapshot, extendActivityWindow: !snapshot.isEmpty)
     }
 
     func stopObserving() {
+        stopWatchdog(resetActivityWindow: true)
+        latestBadgeSnapshot = [:]
+
         guard let observer = dockObserver else {
             dockElement = nil
             observedDockItemElements.removeAll()
@@ -136,45 +174,10 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
     func fetchBadgeCountByProcessID() -> [pid_t: Int] {
         ensureObservationIfNeeded()
 
-        guard AXIsProcessTrusted(),
-              let dockElement else {
-            return [:]
-        }
-
-        let dockItems = applicationDockItems(startingAt: dockElement)
-        guard !dockItems.isEmpty else {
-            return [:]
-        }
-
-        var badgeCountByBundleIdentifier: [String: Int] = [:]
-        for dockItem in dockItems {
-            guard let bundleIdentifier = bundleIdentifier(from: dockItem),
-                  let badgeCount = badgeCount(from: dockItem),
-                  badgeCount > 0 else {
-                continue
-            }
-
-            let existingCount = badgeCountByBundleIdentifier[bundleIdentifier] ?? 0
-            badgeCountByBundleIdentifier[bundleIdentifier] = max(existingCount, badgeCount)
-        }
-
-        guard !badgeCountByBundleIdentifier.isEmpty else {
-            return [:]
-        }
-
-        var badgeCountByProcessID: [pid_t: Int] = [:]
-        for application in NSWorkspace.shared.runningApplications {
-            guard !application.isTerminated,
-                  application.activationPolicy == .regular,
-                  let bundleIdentifier = application.bundleIdentifier,
-                  let badgeCount = badgeCountByBundleIdentifier[bundleIdentifier] else {
-                continue
-            }
-
-            badgeCountByProcessID[application.processIdentifier] = badgeCount
-        }
-
-        return badgeCountByProcessID
+        let snapshot = collectBadgeCountByProcessID()
+        latestBadgeSnapshot = snapshot
+        updateWatchdogState(afterReading: snapshot, extendActivityWindow: !snapshot.isEmpty)
+        return snapshot
     }
 
     private func ensureObservationIfNeeded() {
@@ -187,18 +190,38 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
         element: AXUIElement,
         notification: String
     ) {
-        if notification == AXNotificationName.childrenChanged,
-           let dockElement,
-           CFEqual(element, dockElement) {
+        if shouldReloadDockItemObservers(element: element, notification: notification) {
             reloadDockItemObservers()
         }
 
+        recordWatchdogActivity()
+        onBadgeStateChanged?()
+    }
+
+    private func shouldReloadDockItemObservers(
+        element: AXUIElement,
+        notification: String
+    ) -> Bool {
         if notification == AXNotificationName.uiElementDestroyed,
            observedDockItemElements.contains(where: { CFEqual($0, element) }) {
-            reloadDockItemObservers()
+            return true
         }
 
-        onBadgeStateChanged?()
+        guard let dockElement,
+              CFEqual(element, dockElement) else {
+            return false
+        }
+
+        switch notification {
+        case AXNotificationName.selectedChildrenChanged,
+             AXNotificationName.layoutChanged,
+             AXNotificationName.created,
+             Self.undocumentedChildrenChangedNotification:
+            return true
+
+        default:
+            return false
+        }
     }
 
     private func reloadDockItemObservers() {
@@ -249,6 +272,10 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
             if result == .success || result == .notificationAlreadyRegistered {
                 continue
             }
+
+            Self.logger.debug(
+                "AXObserverAddNotification failed. notification=\(notification, privacy: .public) result=\(result.rawValue, privacy: .public)"
+            )
         }
     }
 
@@ -264,6 +291,48 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
                 notification as CFString
             )
         }
+    }
+
+    private func collectBadgeCountByProcessID() -> [pid_t: Int] {
+        guard AXIsProcessTrusted(),
+              let dockElement else {
+            return [:]
+        }
+
+        let dockItems = applicationDockItems(startingAt: dockElement)
+        guard !dockItems.isEmpty else {
+            return [:]
+        }
+
+        var badgeCountByBundleIdentifier: [String: Int] = [:]
+        for dockItem in dockItems {
+            guard let bundleIdentifier = bundleIdentifier(from: dockItem),
+                  let badgeCount = badgeCount(from: dockItem),
+                  badgeCount > 0 else {
+                continue
+            }
+
+            let existingCount = badgeCountByBundleIdentifier[bundleIdentifier] ?? 0
+            badgeCountByBundleIdentifier[bundleIdentifier] = max(existingCount, badgeCount)
+        }
+
+        guard !badgeCountByBundleIdentifier.isEmpty else {
+            return [:]
+        }
+
+        var badgeCountByProcessID: [pid_t: Int] = [:]
+        for application in NSWorkspace.shared.runningApplications {
+            guard !application.isTerminated,
+                  application.activationPolicy == .regular,
+                  let bundleIdentifier = application.bundleIdentifier,
+                  let badgeCount = badgeCountByBundleIdentifier[bundleIdentifier] else {
+                continue
+            }
+
+            badgeCountByProcessID[application.processIdentifier] = badgeCount
+        }
+
+        return badgeCountByProcessID
     }
 
     private func applicationDockItems(startingAt element: AXUIElement) -> [AXUIElement] {
@@ -368,5 +437,100 @@ final class DockNotificationBadgeProvider: DockNotificationBadgeProviding {
         }
 
         return value
+    }
+
+    private func recordWatchdogActivity() {
+        watchdogActiveUntil = Date().addingTimeInterval(watchdogActivityWindow)
+        watchdogCurrentInterval = watchdogMinimumInterval
+        scheduleWatchdogTickIfNeeded()
+    }
+
+    private func updateWatchdogState(
+        afterReading snapshot: [pid_t: Int],
+        extendActivityWindow: Bool
+    ) {
+        if extendActivityWindow {
+            watchdogActiveUntil = Date().addingTimeInterval(watchdogActivityWindow)
+        }
+
+        guard shouldKeepWatchdogRunning(with: snapshot) else {
+            stopWatchdog(resetActivityWindow: false)
+            return
+        }
+
+        scheduleWatchdogTickIfNeeded()
+    }
+
+    private func shouldKeepWatchdogRunning(with snapshot: [pid_t: Int]) -> Bool {
+        if !snapshot.isEmpty {
+            return true
+        }
+
+        guard let watchdogActiveUntil else {
+            return false
+        }
+
+        return Date() < watchdogActiveUntil
+    }
+
+    private func scheduleWatchdogTickIfNeeded() {
+        guard watchdogWorkItem == nil else {
+            return
+        }
+
+        let interval = min(
+            max(watchdogCurrentInterval, watchdogMinimumInterval),
+            watchdogMaximumInterval
+        )
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.watchdogWorkItem = nil
+            self.runWatchdogTick()
+        }
+
+        watchdogWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: workItem)
+    }
+
+    private func runWatchdogTick() {
+        let snapshot = collectBadgeCountByProcessID()
+        let didChange = snapshot != latestBadgeSnapshot
+        latestBadgeSnapshot = snapshot
+
+        if didChange {
+            onBadgeStateChanged?()
+            watchdogCurrentInterval = watchdogMinimumInterval
+            watchdogActiveUntil = Date().addingTimeInterval(watchdogActivityWindow)
+        } else {
+            watchdogCurrentInterval = min(
+                watchdogCurrentInterval + watchdogBackoffStep,
+                watchdogMaximumInterval
+            )
+        }
+
+        if !snapshot.isEmpty {
+            watchdogActiveUntil = Date().addingTimeInterval(watchdogActivityWindow)
+        }
+
+        guard shouldKeepWatchdogRunning(with: snapshot) else {
+            stopWatchdog(resetActivityWindow: false)
+            return
+        }
+
+        scheduleWatchdogTickIfNeeded()
+    }
+
+    private func stopWatchdog(resetActivityWindow: Bool) {
+        watchdogWorkItem?.cancel()
+        watchdogWorkItem = nil
+        watchdogCurrentInterval = watchdogMinimumInterval
+
+        if resetActivityWindow {
+            watchdogActiveUntil = nil
+        }
     }
 }
