@@ -81,8 +81,7 @@ final class BarManager: ObservableObject {
 
         let requestAccepted: Bool
         if #available(macOS 14.0, *) {
-            // Clicks on our non-activating panel do not always make this app active.
-            // Become active first, then cooperatively yield to the target app.
+            // Ensure our process is active before yielding focus to the target app.
             NSApp.activate()
             NSApp.yieldActivation(to: app)
             requestAccepted = app.activate(from: .current, options: [.activateAllWindows])

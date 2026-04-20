@@ -96,7 +96,7 @@ final class DisplayPanelController {
 
         let panel = DisplayPanelWindow(
             contentRect: .zero,
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
@@ -109,9 +109,7 @@ final class DisplayPanelController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [
             .canJoinAllSpaces,
-            .fullScreenAuxiliary,
-            .ignoresCycle,
-            .stationary
+            .fullScreenAuxiliary
         ]
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
