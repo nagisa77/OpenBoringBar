@@ -192,7 +192,8 @@ final class DisplayPanelController {
                         processID: processID,
                         pillFrameInScreen: frameInScreen
                     )
-                }
+                },
+                onRequestQuit: handleQuitRequested
             )
         )
 
@@ -267,6 +268,10 @@ final class DisplayPanelController {
             processID: processID,
             windowID: windowID
         )
+    }
+
+    private func handleQuitRequested() {
+        NSApp.terminate(nil)
     }
 
     private func schedulePreviewShow(

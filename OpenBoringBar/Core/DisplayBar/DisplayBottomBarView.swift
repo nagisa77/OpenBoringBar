@@ -15,6 +15,7 @@ struct DisplayBottomBarView: View {
     let onSwitch: (pid_t) -> Void
     let onOpenApplication: (URL) -> Void
     let onAppHoverChanged: (pid_t?, CGRect?) -> Void
+    let onRequestQuit: () -> Void
 
     @State private var isApplicationLauncherPresented = false
 
@@ -90,6 +91,16 @@ struct DisplayBottomBarView: View {
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contextMenu {
+            Button(action: onRequestQuit) {
+                Label("Quit", systemImage: "xmark.circle")
+            }
+
+            Button(action: {}) {
+                Label("Auto-collapse", systemImage: "arrow.down.to.line.compact")
+            }
+            .disabled(true)
+        }
     }
 
     private var applicationLauncherButton: some View {
