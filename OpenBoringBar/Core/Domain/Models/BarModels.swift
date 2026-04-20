@@ -4,6 +4,7 @@ struct RunningAppItem: Identifiable, Hashable {
     let processID: pid_t
     let name: String
     let isFrontmost: Bool
+    let notificationBadgeCount: Int
 
     var id: pid_t { processID }
 }

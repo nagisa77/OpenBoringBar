@@ -9,6 +9,7 @@ final class BarManager: ObservableObject {
     private let eventBus: AppEventBus
     private let installedApplicationProvider: InstalledApplicationProviding
     private let windowPreviewProvider: WindowPreviewProviding
+    private let dockNotificationBadgeProvider: DockNotificationBadgeProviding
     private let displayStateBuilder: BarDisplayStateBuilder
     private let accessibilityObserverManager: BarAccessibilityObserverManager
     private let workspaceNotificationCenter: NotificationCenter
@@ -23,6 +24,7 @@ final class BarManager: ObservableObject {
         eventBus: AppEventBus,
         installedApplicationProvider: InstalledApplicationProviding = InstalledApplicationProvider(),
         windowPreviewProvider: WindowPreviewProviding = WindowPreviewProvider(),
+        dockNotificationBadgeProvider: DockNotificationBadgeProviding = DockNotificationBadgeProvider(),
         displayStateBuilder: BarDisplayStateBuilder = BarDisplayStateBuilder(),
         accessibilityObserverManager: BarAccessibilityObserverManager = BarAccessibilityObserverManager()
     ) {
@@ -31,6 +33,7 @@ final class BarManager: ObservableObject {
         self.eventBus = eventBus
         self.installedApplicationProvider = installedApplicationProvider
         self.windowPreviewProvider = windowPreviewProvider
+        self.dockNotificationBadgeProvider = dockNotificationBadgeProvider
         self.displayStateBuilder = displayStateBuilder
         self.accessibilityObserverManager = accessibilityObserverManager
         self.workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
@@ -39,10 +42,14 @@ final class BarManager: ObservableObject {
         self.accessibilityObserverManager.onObservedChange = { [weak self] in
             self?.scheduleDisplayRefresh()
         }
+        self.dockNotificationBadgeProvider.onBadgeStateChanged = { [weak self] in
+            self?.scheduleDisplayRefresh()
+        }
 
         configureDisplayObserver()
         configureWorkspaceObservers()
         self.accessibilityObserverManager.installObserversForRunningApps()
+        self.dockNotificationBadgeProvider.startObserving()
 
         refreshDisplayStates()
         refreshLaunchableApplications()
@@ -52,6 +59,7 @@ final class BarManager: ObservableObject {
         pendingRefreshWorkItem?.cancel()
         pendingRefreshWorkItem = nil
         accessibilityObserverManager.teardownAllObservers()
+        dockNotificationBadgeProvider.stopObserving()
 
         if let displayObserver {
             NotificationCenter.default.removeObserver(displayObserver)
@@ -292,7 +300,10 @@ final class BarManager: ObservableObject {
     }
 
     private func refreshDisplayStates() {
-        displayStates = displayStateBuilder.buildDisplayStates()
+        let badgeCountByProcessID = dockNotificationBadgeProvider.fetchBadgeCountByProcessID()
+        displayStates = displayStateBuilder.buildDisplayStates(
+            notificationBadgeCountByProcessID: badgeCountByProcessID
+        )
     }
 
     private func refreshLaunchableApplications() {

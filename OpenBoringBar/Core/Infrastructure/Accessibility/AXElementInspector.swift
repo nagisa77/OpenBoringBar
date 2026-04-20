@@ -5,7 +5,11 @@ import Foundation
 enum AXAttributeName {
     static let focusedWindow = "AXFocusedWindow" as CFString
     static let windows = "AXWindows" as CFString
+    static let children = "AXChildren" as CFString
     static let title = "AXTitle" as CFString
+    static let subrole = "AXSubrole" as CFString
+    static let statusLabel = "AXStatusLabel" as CFString
+    static let url = "AXURL" as CFString
     static let position = "AXPosition" as CFString
     static let size = "AXSize" as CFString
     static let minimized = "AXMinimized" as CFString
@@ -21,6 +25,8 @@ enum AXNotificationName {
     static let moved = "AXMoved"
     static let resized = "AXResized"
     static let titleChanged = "AXTitleChanged"
+    static let childrenChanged = "AXChildrenChanged"
+    static let valueChanged = "AXValueChanged"
     static let applicationHidden = "AXApplicationHidden"
     static let applicationShown = "AXApplicationShown"
     static let uiElementDestroyed = "AXUIElementDestroyed"
@@ -45,27 +51,11 @@ enum AXElementInspector {
     }
 
     static func windows(from appElement: AXUIElement) -> [AXUIElement]? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            appElement,
-            AXAttributeName.windows,
-            &value
-        )
+        uiElementArrayAttributeValue(of: AXAttributeName.windows, from: appElement)
+    }
 
-        guard result == .success,
-              let value,
-              CFGetTypeID(value) == CFArrayGetTypeID() else {
-            return nil
-        }
-
-        let array = unsafeBitCast(value, to: NSArray.self)
-        return array.compactMap { item in
-            guard CFGetTypeID(item as CFTypeRef) == AXUIElementGetTypeID() else {
-                return nil
-            }
-
-            return unsafeBitCast(item as CFTypeRef, to: AXUIElement.self)
-        }
+    static func children(from element: AXUIElement) -> [AXUIElement]? {
+        uiElementArrayAttributeValue(of: AXAttributeName.children, from: element)
     }
 
     static func frame(of window: AXUIElement) -> CGRect? {
@@ -87,7 +77,11 @@ enum AXElementInspector {
 
     static func stringAttributeValue(of attribute: CFString, from element: AXUIElement) -> String? {
         var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        let result = AXUIElementCopyAttributeValue(
+            element,
+            attribute,
+            &value
+        )
 
         guard result == .success,
               let string = value as? String else {
@@ -95,6 +89,28 @@ enum AXElementInspector {
         }
 
         return string
+    }
+
+    static func urlAttributeValue(of attribute: CFString, from element: AXUIElement) -> URL? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+
+        guard result == .success else {
+            return nil
+        }
+
+        if let url = value as? URL {
+            return url
+        }
+
+        if let path = value as? String {
+            if path.hasPrefix("file://") {
+                return URL(string: path)
+            }
+            return URL(fileURLWithPath: path)
+        }
+
+        return nil
     }
 
     static func boolAttributeValue(of attribute: CFString, from element: AXUIElement) -> Bool? {
@@ -153,5 +169,32 @@ enum AXElementInspector {
         }
 
         return size
+    }
+
+    private static func uiElementArrayAttributeValue(
+        of attribute: CFString,
+        from element: AXUIElement
+    ) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            element,
+            attribute,
+            &value
+        )
+
+        guard result == .success,
+              let value,
+              CFGetTypeID(value) == CFArrayGetTypeID() else {
+            return nil
+        }
+
+        let array = unsafeBitCast(value, to: NSArray.self)
+        return array.compactMap { item in
+            guard CFGetTypeID(item as CFTypeRef) == AXUIElementGetTypeID() else {
+                return nil
+            }
+
+            return unsafeBitCast(item as CFTypeRef, to: AXUIElement.self)
+        }
     }
 }

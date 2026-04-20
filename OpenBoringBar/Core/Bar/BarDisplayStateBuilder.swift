@@ -8,7 +8,9 @@ final class BarDisplayStateBuilder {
         self.appOrderManager = appOrderManager
     }
 
-    func buildDisplayStates() -> [DisplayState] {
+    func buildDisplayStates(
+        notificationBadgeCountByProcessID: [pid_t: Int] = [:]
+    ) -> [DisplayState] {
         let screens = NSScreen.screens
         let displayIDs = screens.compactMap(\.displayID)
         appOrderManager.syncActiveDisplays(Set(displayIDs))
@@ -62,7 +64,11 @@ final class BarDisplayStateBuilder {
                 RunningAppItem(
                     processID: snapshot.processID,
                     name: snapshot.name,
-                    isFrontmost: snapshot.processID == frontmostPID && displayID == frontmostDisplayID
+                    isFrontmost: snapshot.processID == frontmostPID && displayID == frontmostDisplayID,
+                    notificationBadgeCount: max(
+                        0,
+                        notificationBadgeCountByProcessID[snapshot.processID] ?? 0
+                    )
                 )
             }
 

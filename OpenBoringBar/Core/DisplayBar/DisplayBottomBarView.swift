@@ -159,6 +159,18 @@ private struct DisplayBarAppPill: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: Self.appNameMaxWidth, alignment: .leading)
                     .contentTransition(.opacity)
+
+                if app.notificationBadgeCount > 0 {
+                    DisplayBarAppNotificationBadge(
+                        count: app.notificationBadgeCount
+                    )
+                    .transition(
+                        .asymmetric(
+                            insertion: .scale(scale: 0.85).combined(with: .opacity),
+                            removal: .opacity
+                        )
+                    )
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
@@ -207,9 +219,43 @@ private struct DisplayBarAppPill: View {
             value: app.isFrontmost
         )
         .animation(
+            DisplayBottomBarAnimation.appStateChange,
+            value: app.notificationBadgeCount
+        )
+        .animation(
             DisplayBottomBarAnimation.appListMutation,
             value: app.name
         )
+    }
+}
+
+private struct DisplayBarAppNotificationBadge: View {
+    private static let minimumWidth: CGFloat = 18
+    private static let horizontalPadding: CGFloat = 6
+    private static let verticalPadding: CGFloat = 2
+    private static let maxDisplayedCount = 99
+
+    let count: Int
+
+    private var text: String {
+        if count > Self.maxDisplayedCount {
+            return "\(Self.maxDisplayedCount)+"
+        }
+        return String(count)
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .foregroundStyle(Color.white)
+            .lineLimit(1)
+            .padding(.horizontal, Self.horizontalPadding)
+            .padding(.vertical, Self.verticalPadding)
+            .frame(minWidth: Self.minimumWidth)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.red.opacity(0.92))
+            )
     }
 }
 
