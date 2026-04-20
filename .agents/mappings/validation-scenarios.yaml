@@ -1,0 +1,39 @@
+validation_scenarios:
+  - id: permission_setup
+    title: Permission setup flow
+    required: true
+    steps:
+      - launch_with_missing_permissions
+      - verify_setup_screen
+      - grant_permissions_and_confirm_runtime
+
+  - id: multi_display_lifecycle
+    title: Multi-display bar create/remove
+    required: true
+    steps:
+      - attach_multiple_displays
+      - confirm_per_display_bar
+      - disconnect_reconnect_display_and_recheck
+
+  - id: capsule_app_switch
+    title: App switch from capsule
+    required: true
+    steps:
+      - open_multiple_apps
+      - switch_using_capsules
+      - verify_frontmost_app_changes
+
+  - id: launcher_flow
+    title: Launcher open/search/launch
+    required: true
+    steps:
+      - open_launcher
+      - search_application
+      - launch_and_verify_focus
+
+  - id: bottom_guard
+    title: Bottom guard behavior
+    required: true
+    steps:
+      - move_frontmost_window_to_bottom_edge
+      - verify_no_unintended_overlap

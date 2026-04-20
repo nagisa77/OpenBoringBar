@@ -1,0 +1,55 @@
+module_ownership:
+  app:
+    paths:
+      - OpenBoringBar/App/**
+    responsibility:
+      - app entry
+      - top-level flow
+    disallow:
+      - accessibility policy
+      - window-list business logic
+
+  application:
+    paths:
+      - OpenBoringBar/Core/Application/**
+    responsibility:
+      - runtime orchestration
+      - feature wiring
+      - typed event coordination
+
+  bar:
+    paths:
+      - OpenBoringBar/Core/Bar/**
+    responsibility:
+      - app ordering and snapshots
+      - activation and switching behavior
+      - active-window bottom guard policy
+
+  display_bar:
+    paths:
+      - OpenBoringBar/Core/DisplayBar/**
+    responsibility:
+      - display panel lifecycle
+      - bar UI rendering
+      - launcher and preview panel presentation
+    disallow:
+      - accessibility policy
+
+  domain:
+    paths:
+      - OpenBoringBar/Core/Domain/Models/**
+    responsibility:
+      - shared entities
+      - value objects
+    constraints:
+      - dependency_light
+
+  infrastructure:
+    paths:
+      - OpenBoringBar/Core/Infrastructure/**
+    responsibility:
+      - system adapters
+      - accessibility and screen inspectors
+    disallow:
+      - product orchestration
+      - ui composition
