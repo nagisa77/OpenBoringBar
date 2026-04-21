@@ -1,8 +1,10 @@
 import Combine
+import CoreGraphics
 import Foundation
 
 enum AppEvent {
     case capsuleAppSwitchConfirmed(processID: pid_t)
+    case barDisplayHeightChanged(displayID: CGDirectDisplayID, height: CGFloat)
 }
 
 protocol AppEventBus {

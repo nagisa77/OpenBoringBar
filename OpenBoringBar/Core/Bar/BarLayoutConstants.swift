@@ -3,6 +3,9 @@ import Foundation
 
 enum BarLayoutConstants {
     static let panelHeight: CGFloat = 44
+    static let panelCollapseAnimationDuration: TimeInterval = 0.2
+    static let autoCollapsePointerPollInterval: TimeInterval = 0.08
+    static let autoCollapseBottomRevealHotZoneHeight: CGFloat = 10
     static let activeWindowCheckInterval: TimeInterval = 2
     static let launcherButtonSize: CGFloat = 28
     static let launcherPopoverWidth: CGFloat = 300

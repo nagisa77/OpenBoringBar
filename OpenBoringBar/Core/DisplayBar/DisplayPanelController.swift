@@ -3,18 +3,42 @@ import Combine
 import SwiftUI
 
 final class DisplayPanelController {
+    private static let autoCollapseDefaultsKey = "OpenBoringBar.autoCollapseEnabled"
+
     private let barManager: BarManager
+    private let eventBus: AppEventBus
     private var panelStateCancellable: AnyCancellable?
     private var windowsByDisplayID: [CGDirectDisplayID: DisplayPanelWindow] = [:]
     private var previewContextsByDisplayID: [CGDirectDisplayID: DisplayPreviewContext] = [:]
+    private var panelHeightByDisplayID: [CGDirectDisplayID: CGFloat] = [:]
+    private var isBarHoveringByDisplayID: [CGDirectDisplayID: Bool] = [:]
+    private var isCollapsedByDisplayID: [CGDirectDisplayID: Bool] = [:]
+    private var collapseHideWorkItemByDisplayID: [CGDirectDisplayID: DispatchWorkItem] = [:]
+    private var pointerPollTimer: Timer?
+    private var isAutoCollapseEnabled: Bool
 
-    init(barManager: BarManager) {
+    init(barManager: BarManager, eventBus: AppEventBus) {
         self.barManager = barManager
+        self.eventBus = eventBus
+        self.isAutoCollapseEnabled = UserDefaults.standard.bool(
+            forKey: Self.autoCollapseDefaultsKey
+        )
+    }
+
+    deinit {
+        stopPointerPolling()
+        for displayID in Array(collapseHideWorkItemByDisplayID.keys) {
+            cancelCollapseHideWorkItem(for: displayID)
+        }
     }
 
     func start() {
         guard panelStateCancellable == nil else {
             return
+        }
+
+        if isAutoCollapseEnabled {
+            startPointerPollingIfNeeded()
         }
 
         panelStateCancellable = Publishers.CombineLatest(
@@ -35,12 +59,21 @@ final class DisplayPanelController {
     func stop() {
         panelStateCancellable?.cancel()
         panelStateCancellable = nil
+        stopPointerPolling()
+
+        for displayID in windowsByDisplayID.keys {
+            cancelCollapseHideWorkItem(for: displayID)
+            postDisplayHeight(0, for: displayID, force: true)
+        }
 
         for panel in windowsByDisplayID.values {
             panel.orderOut(nil)
             panel.close()
         }
         windowsByDisplayID.removeAll()
+        panelHeightByDisplayID.removeAll()
+        isBarHoveringByDisplayID.removeAll()
+        isCollapsedByDisplayID.removeAll()
 
         for displayID in Array(previewContextsByDisplayID.keys) {
             closePreviewContext(for: displayID)
@@ -54,9 +87,14 @@ final class DisplayPanelController {
         let activeDisplayIDs = Set(states.map(\.id))
 
         for (displayID, panel) in Array(windowsByDisplayID) where !activeDisplayIDs.contains(displayID) {
+            cancelCollapseHideWorkItem(for: displayID)
             panel.orderOut(nil)
             panel.close()
             windowsByDisplayID.removeValue(forKey: displayID)
+            isBarHoveringByDisplayID.removeValue(forKey: displayID)
+            isCollapsedByDisplayID.removeValue(forKey: displayID)
+            postDisplayHeight(0, for: displayID, force: true)
+            panelHeightByDisplayID.removeValue(forKey: displayID)
         }
 
         for displayID in Array(previewContextsByDisplayID.keys) where !activeDisplayIDs.contains(displayID) {
@@ -68,22 +106,27 @@ final class DisplayPanelController {
                 continue
             }
 
+            let isNewPanel = windowsByDisplayID[state.id] == nil
             let panel = panelForDisplay(state.id)
-            updateFrame(of: panel, in: screen)
             updateContent(
                 of: panel,
                 displayID: state.id,
                 with: state.apps,
                 launchableApplications: launchableApplications
             )
-            panel.orderFrontRegardless()
+            updatePanelPresentation(
+                of: panel,
+                displayID: state.id,
+                in: screen,
+                animated: !isNewPanel
+            )
 
             if let context = previewContextsByDisplayID[state.id],
                let hoveredPID = context.hoverTarget?.processID,
                !state.apps.contains(where: { $0.processID == hoveredPID }) {
                 context.hoverTarget = nil
                 if !context.isPointerInsidePreview {
-                    schedulePreviewHide(for: context)
+                    schedulePreviewHide(for: state.id, context: context)
                 }
             }
         }
@@ -161,17 +204,7 @@ final class DisplayPanelController {
         context.invalidate()
         context.panel.orderOut(nil)
         context.panel.close()
-    }
-
-    private func updateFrame(of panel: DisplayPanelWindow, in screen: NSScreen) {
-        let width = screen.frame.width
-        let x = screen.frame.minX
-        let y = screen.frame.minY
-        let frame = CGRect(x: x, y: y, width: width, height: BarLayoutConstants.panelHeight)
-
-        if panel.frame != frame {
-            panel.setFrame(frame, display: true)
-        }
+        refreshAutoCollapsePresentation(animated: true)
     }
 
     private func updateContent(
@@ -184,6 +217,7 @@ final class DisplayPanelController {
             DisplayBottomBarView(
                 apps: apps,
                 launchableApplications: launchableApplications,
+                isAutoCollapseEnabled: isAutoCollapseEnabled,
                 onSwitch: barManager.activate(processID:),
                 onOpenApplication: barManager.openApplication(bundleURL:),
                 onAppHoverChanged: { [weak self] processID, frameInScreen in
@@ -192,6 +226,15 @@ final class DisplayPanelController {
                         processID: processID,
                         pillFrameInScreen: frameInScreen
                     )
+                },
+                onBarHoverChanged: { [weak self] isHovering in
+                    self?.handleBarHoverChanged(
+                        displayID: displayID,
+                        isHovering: isHovering
+                    )
+                },
+                onAutoCollapseToggled: { [weak self] isEnabled in
+                    self?.handleAutoCollapseToggled(isEnabled: isEnabled)
                 },
                 onRequestQuit: handleQuitRequested
             )
@@ -204,6 +247,217 @@ final class DisplayPanelController {
         }
     }
 
+    private func handleBarHoverChanged(
+        displayID: CGDirectDisplayID,
+        isHovering: Bool
+    ) {
+        isBarHoveringByDisplayID[displayID] = isHovering
+        guard isAutoCollapseEnabled else {
+            return
+        }
+
+        refreshAutoCollapsePresentation(animated: true)
+    }
+
+    private func handleAutoCollapseToggled(isEnabled: Bool) {
+        guard isAutoCollapseEnabled != isEnabled else {
+            return
+        }
+
+        isAutoCollapseEnabled = isEnabled
+        UserDefaults.standard.set(
+            isEnabled,
+            forKey: Self.autoCollapseDefaultsKey
+        )
+        if isEnabled {
+            startPointerPollingIfNeeded()
+        } else {
+            stopPointerPolling()
+        }
+
+        syncPanels(
+            with: barManager.displayStates,
+            launchableApplications: barManager.launchableApplications
+        )
+        refreshAutoCollapsePresentation(animated: true)
+    }
+
+    private func startPointerPollingIfNeeded() {
+        guard pointerPollTimer == nil else {
+            return
+        }
+
+        let timer = Timer(
+            timeInterval: BarLayoutConstants.autoCollapsePointerPollInterval,
+            repeats: true
+        ) { [weak self] _ in
+            self?.refreshAutoCollapsePresentation(animated: true)
+        }
+        pointerPollTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopPointerPolling() {
+        pointerPollTimer?.invalidate()
+        pointerPollTimer = nil
+    }
+
+    private func refreshAutoCollapsePresentation(animated: Bool) {
+        guard isAutoCollapseEnabled, !windowsByDisplayID.isEmpty else {
+            return
+        }
+
+        for (displayID, panel) in windowsByDisplayID {
+            guard let screen = NSScreen.screens.first(where: { $0.displayID == displayID }) else {
+                continue
+            }
+
+            updatePanelPresentation(
+                of: panel,
+                displayID: displayID,
+                in: screen,
+                animated: animated
+            )
+        }
+    }
+
+    private func updatePanelPresentation(
+        of panel: DisplayPanelWindow,
+        displayID: CGDirectDisplayID,
+        in screen: NSScreen,
+        animated: Bool
+    ) {
+        let shouldCollapse = shouldCollapsePanel(displayID: displayID, in: screen)
+        let wasCollapsed = isCollapsedByDisplayID[displayID] ?? false
+        isCollapsedByDisplayID[displayID] = shouldCollapse
+
+        let expandedFrame = expandedFrame(in: screen)
+        let collapsedFrame = collapsedFrame(in: screen)
+
+        if shouldCollapse {
+            panel.setFrame(collapsedFrame, display: true, animate: animated && !wasCollapsed)
+            postDisplayHeight(0, for: displayID)
+
+            let hideAction = { [weak self, weak panel] in
+                guard let self, let panel else {
+                    return
+                }
+                self.collapseHideWorkItemByDisplayID[displayID] = nil
+                guard self.isCollapsedByDisplayID[displayID] == true else {
+                    return
+                }
+                panel.orderOut(nil)
+            }
+
+            cancelCollapseHideWorkItem(for: displayID)
+            if animated && !wasCollapsed {
+                let workItem = DispatchWorkItem(block: hideAction)
+                collapseHideWorkItemByDisplayID[displayID] = workItem
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + BarLayoutConstants.panelCollapseAnimationDuration,
+                    execute: workItem
+                )
+            } else {
+                hideAction()
+            }
+            return
+        }
+
+        cancelCollapseHideWorkItem(for: displayID)
+        if !panel.isVisible {
+            panel.setFrame(collapsedFrame, display: true)
+        }
+        panel.orderFrontRegardless()
+        if panel.frame != expandedFrame {
+            panel.setFrame(expandedFrame, display: true, animate: animated)
+        }
+        postDisplayHeight(expandedFrame.height, for: displayID)
+    }
+
+    private func shouldCollapsePanel(
+        displayID: CGDirectDisplayID,
+        in screen: NSScreen
+    ) -> Bool {
+        guard isAutoCollapseEnabled else {
+            return false
+        }
+
+        if isBarHoveringByDisplayID[displayID] == true {
+            return false
+        }
+
+        if shouldKeepExpandedForPreview(displayID: displayID) {
+            return false
+        }
+
+        return !isPointerNearBottom(of: screen)
+    }
+
+    private func shouldKeepExpandedForPreview(displayID: CGDirectDisplayID) -> Bool {
+        guard let context = previewContextsByDisplayID[displayID] else {
+            return false
+        }
+
+        return context.panel.isVisible
+            || context.hoverTarget != nil
+            || context.isPointerInsidePreview
+    }
+
+    private func isPointerNearBottom(of screen: NSScreen) -> Bool {
+        let pointerLocation = NSEvent.mouseLocation
+        guard screen.frame.contains(pointerLocation) else {
+            return false
+        }
+
+        return pointerLocation.y <=
+            (screen.frame.minY + BarLayoutConstants.autoCollapseBottomRevealHotZoneHeight)
+    }
+
+    private func expandedFrame(in screen: NSScreen) -> CGRect {
+        CGRect(
+            x: screen.frame.minX,
+            y: screen.frame.minY,
+            width: screen.frame.width,
+            height: BarLayoutConstants.panelHeight
+        )
+    }
+
+    private func collapsedFrame(in screen: NSScreen) -> CGRect {
+        CGRect(
+            x: screen.frame.minX,
+            y: screen.frame.minY,
+            width: screen.frame.width,
+            height: 0
+        )
+    }
+
+    private func cancelCollapseHideWorkItem(for displayID: CGDirectDisplayID) {
+        collapseHideWorkItemByDisplayID[displayID]?.cancel()
+        collapseHideWorkItemByDisplayID[displayID] = nil
+    }
+
+    private func postDisplayHeight(
+        _ height: CGFloat,
+        for displayID: CGDirectDisplayID,
+        force: Bool = false
+    ) {
+        let normalizedHeight = max(0, height)
+
+        if !force,
+           let previousHeight = panelHeightByDisplayID[displayID],
+           abs(previousHeight - normalizedHeight) < 0.5 {
+            return
+        }
+
+        panelHeightByDisplayID[displayID] = normalizedHeight
+        eventBus.post(
+            .barDisplayHeightChanged(
+                displayID: displayID,
+                height: normalizedHeight
+            )
+        )
+    }
+
     private func handleAppHoverChanged(
         displayID: CGDirectDisplayID,
         processID: pid_t?,
@@ -214,8 +468,9 @@ final class DisplayPanelController {
         guard let processID, let pillFrameInScreen else {
             context.hoverTarget = nil
             if !context.isPointerInsidePreview {
-                schedulePreviewHide(for: context)
+                schedulePreviewHide(for: displayID, context: context)
             }
+            refreshAutoCollapsePresentation(animated: true)
             return
         }
 
@@ -232,6 +487,7 @@ final class DisplayPanelController {
         } else {
             schedulePreviewShow(for: displayID, context: context)
         }
+        refreshAutoCollapsePresentation(animated: true)
     }
 
     private func handlePreviewHoverChanged(
@@ -247,12 +503,14 @@ final class DisplayPanelController {
         if isHovering {
             context.hideWorkItem?.cancel()
             context.hideWorkItem = nil
+            refreshAutoCollapsePresentation(animated: true)
             return
         }
 
         if context.hoverTarget == nil {
-            schedulePreviewHide(for: context)
+            schedulePreviewHide(for: displayID, context: context)
         }
+        refreshAutoCollapsePresentation(animated: true)
     }
 
     private func handlePreviewWindowSelection(
@@ -334,15 +592,19 @@ final class DisplayPanelController {
         }
 
         context.panel.orderFrontRegardless()
+        refreshAutoCollapsePresentation(animated: true)
     }
 
-    private func schedulePreviewHide(for context: DisplayPreviewContext) {
+    private func schedulePreviewHide(
+        for displayID: CGDirectDisplayID,
+        context: DisplayPreviewContext
+    ) {
         context.showWorkItem?.cancel()
         context.showWorkItem = nil
         context.hideWorkItem?.cancel()
 
-        let workItem = DispatchWorkItem { [weak context] in
-            guard let context else {
+        let workItem = DispatchWorkItem { [weak self, weak context] in
+            guard let self, let context else {
                 return
             }
 
@@ -354,6 +616,7 @@ final class DisplayPanelController {
             }
 
             context.panel.orderOut(nil)
+            self.refreshAutoCollapsePresentation(animated: true)
         }
 
         context.hideWorkItem = workItem

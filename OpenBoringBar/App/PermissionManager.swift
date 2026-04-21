@@ -17,8 +17,7 @@ final class PermissionManager: ObservableObject {
     }
 
     var shouldPresentSetup: Bool {
-      return false;
-//        return !allGranted || (setupRequiredAtLaunch && !setupCompleted)
+        return !allGranted || (setupRequiredAtLaunch && !setupCompleted)
     }
 
     init() {

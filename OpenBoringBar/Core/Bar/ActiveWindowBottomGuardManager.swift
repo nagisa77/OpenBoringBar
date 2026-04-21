@@ -55,6 +55,7 @@ final class ActiveWindowBottomGuardManager {
     private var pendingResizeRequest: PendingResizeRequest?
     private var pendingResizeWorkItem: DispatchWorkItem?
     private var delayedCapsuleSwitchAdjustWorkItem: DispatchWorkItem?
+    private var panelHeightByDisplayID: [CGDirectDisplayID: CGFloat] = [:]
     private let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
 
     init(eventBus: AppEventBus) {
@@ -90,6 +91,9 @@ final class ActiveWindowBottomGuardManager {
                 switch event {
                 case .capsuleAppSwitchConfirmed(let processID):
                     self.scheduleDelayedAdjustAfterConfirmedSwitch(expectedProcessID: processID)
+                case .barDisplayHeightChanged(let displayID, let height):
+                    self.panelHeightByDisplayID[displayID] = max(0, height)
+                    self.adjustActiveWindowIfNeeded(source: "barHeightChanged")
                 }
             }
     }
@@ -452,9 +456,10 @@ final class ActiveWindowBottomGuardManager {
             return false
         }
 
-        let requiredBottomY = screenMatch.displayBounds.maxY - BarLayoutConstants.panelHeight
+        let panelHeight = panelHeightByDisplayID[screenMatch.displayID] ?? BarLayoutConstants.panelHeight
+        let requiredBottomY = screenMatch.displayBounds.maxY - panelHeight
         let currentSnapshot = ActiveProcessSnapshot(processID: processID, windowFrame: windowFrame)
-        log("[\(source)] check: pid=\(processID), displayID=\(screenMatch.displayID), windowMaxY=\(windowFrame.maxY), requiredMaxY=\(requiredBottomY), screenMaxY=\(screenMatch.displayBounds.maxY)")
+        log("[\(source)] check: pid=\(processID), displayID=\(screenMatch.displayID), windowMaxY=\(windowFrame.maxY), requiredMaxY=\(requiredBottomY), panelHeight=\(panelHeight), screenMaxY=\(screenMatch.displayBounds.maxY)")
 
         guard windowFrame.maxY > requiredBottomY else {
             log("[\(source)] no-op: window already above panel for pid=\(processID)")

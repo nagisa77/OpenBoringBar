@@ -26,15 +26,18 @@ final class AppRuntimeCoordinator: ObservableObject {
             return
         }
 
+        startActiveWindowBottomGuardIfNeeded()
+
         if displayPanelController == nil {
-            let controller = DisplayPanelController(barManager: barManager)
+            let controller = DisplayPanelController(
+                barManager: barManager,
+                eventBus: eventBus
+            )
             controller.start()
             displayPanelController = controller
 
             closeHostWindowsKeepingPanels()
         }
-
-        startActiveWindowBottomGuardIfNeeded()
     }
 
     func stopPanelsAndReset() {
