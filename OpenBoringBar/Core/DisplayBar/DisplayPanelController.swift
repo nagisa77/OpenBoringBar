@@ -14,6 +14,8 @@ final class DisplayPanelController {
     private var isBarHoveringByDisplayID: [CGDirectDisplayID: Bool] = [:]
     private var isCollapsedByDisplayID: [CGDirectDisplayID: Bool] = [:]
     private var collapseHideWorkItemByDisplayID: [CGDirectDisplayID: DispatchWorkItem] = [:]
+    private var panelTransitionTargetCollapsedByDisplayID: [CGDirectDisplayID: Bool] = [:]
+    private var panelTransitionWorkItemByDisplayID: [CGDirectDisplayID: DispatchWorkItem] = [:]
     private var pointerPollTimer: Timer?
     private var isAutoCollapseEnabled: Bool
 
@@ -29,6 +31,9 @@ final class DisplayPanelController {
         stopPointerPolling()
         for displayID in Array(collapseHideWorkItemByDisplayID.keys) {
             cancelCollapseHideWorkItem(for: displayID)
+        }
+        for displayID in Array(panelTransitionWorkItemByDisplayID.keys) {
+            cancelPanelTransition(for: displayID)
         }
     }
 
@@ -63,6 +68,7 @@ final class DisplayPanelController {
 
         for displayID in windowsByDisplayID.keys {
             cancelCollapseHideWorkItem(for: displayID)
+            cancelPanelTransition(for: displayID)
             postDisplayHeight(0, for: displayID, force: true)
         }
 
@@ -74,6 +80,7 @@ final class DisplayPanelController {
         panelHeightByDisplayID.removeAll()
         isBarHoveringByDisplayID.removeAll()
         isCollapsedByDisplayID.removeAll()
+        panelTransitionTargetCollapsedByDisplayID.removeAll()
 
         for displayID in Array(previewContextsByDisplayID.keys) {
             closePreviewContext(for: displayID)
@@ -88,11 +95,13 @@ final class DisplayPanelController {
 
         for (displayID, panel) in Array(windowsByDisplayID) where !activeDisplayIDs.contains(displayID) {
             cancelCollapseHideWorkItem(for: displayID)
+            cancelPanelTransition(for: displayID)
             panel.orderOut(nil)
             panel.close()
             windowsByDisplayID.removeValue(forKey: displayID)
             isBarHoveringByDisplayID.removeValue(forKey: displayID)
             isCollapsedByDisplayID.removeValue(forKey: displayID)
+            panelTransitionTargetCollapsedByDisplayID.removeValue(forKey: displayID)
             postDisplayHeight(0, for: displayID, force: true)
             panelHeightByDisplayID.removeValue(forKey: displayID)
         }
@@ -303,7 +312,7 @@ final class DisplayPanelController {
     }
 
     private func refreshAutoCollapsePresentation(animated: Bool) {
-        guard isAutoCollapseEnabled, !windowsByDisplayID.isEmpty else {
+        guard !windowsByDisplayID.isEmpty else {
             return
         }
 
@@ -329,13 +338,37 @@ final class DisplayPanelController {
     ) {
         let shouldCollapse = shouldCollapsePanel(displayID: displayID, in: screen)
         let wasCollapsed = isCollapsedByDisplayID[displayID] ?? false
+        let isTransitioning = panelTransitionWorkItemByDisplayID[displayID] != nil
+
+        if isTransitioning,
+           let transitionTargetCollapsed = panelTransitionTargetCollapsedByDisplayID[displayID],
+           transitionTargetCollapsed != shouldCollapse {
+            return
+        }
+
+        let isStateChanging = shouldCollapse != wasCollapsed
+        let shouldAnimateStateTransition = animated && isStateChanging
+
+        if shouldAnimateStateTransition {
+            startPanelTransition(
+                for: displayID,
+                targetCollapsed: shouldCollapse
+            )
+        } else if !isTransitioning {
+            panelTransitionTargetCollapsedByDisplayID.removeValue(forKey: displayID)
+        }
+
         isCollapsedByDisplayID[displayID] = shouldCollapse
 
         let expandedFrame = expandedFrame(in: screen)
         let collapsedFrame = collapsedFrame(in: screen)
 
         if shouldCollapse {
-            panel.setFrame(collapsedFrame, display: true, animate: animated && !wasCollapsed)
+            panel.setFrame(
+                collapsedFrame,
+                display: true,
+                animate: shouldAnimateStateTransition
+            )
             postDisplayHeight(0, for: displayID)
 
             let hideAction = { [weak self, weak panel] in
@@ -350,7 +383,7 @@ final class DisplayPanelController {
             }
 
             cancelCollapseHideWorkItem(for: displayID)
-            if animated && !wasCollapsed {
+            if shouldAnimateStateTransition {
                 let workItem = DispatchWorkItem(block: hideAction)
                 collapseHideWorkItemByDisplayID[displayID] = workItem
                 DispatchQueue.main.asyncAfter(
@@ -369,7 +402,11 @@ final class DisplayPanelController {
         }
         panel.orderFrontRegardless()
         if panel.frame != expandedFrame {
-            panel.setFrame(expandedFrame, display: true, animate: animated)
+            panel.setFrame(
+                expandedFrame,
+                display: true,
+                animate: shouldAnimateStateTransition
+            )
         }
         postDisplayHeight(expandedFrame.height, for: displayID)
     }
@@ -434,6 +471,36 @@ final class DisplayPanelController {
     private func cancelCollapseHideWorkItem(for displayID: CGDirectDisplayID) {
         collapseHideWorkItemByDisplayID[displayID]?.cancel()
         collapseHideWorkItemByDisplayID[displayID] = nil
+    }
+
+    private func startPanelTransition(
+        for displayID: CGDirectDisplayID,
+        targetCollapsed: Bool
+    ) {
+        cancelPanelTransition(for: displayID)
+        panelTransitionTargetCollapsedByDisplayID[displayID] = targetCollapsed
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.panelTransitionWorkItemByDisplayID[displayID] = nil
+            self.panelTransitionTargetCollapsedByDisplayID.removeValue(forKey: displayID)
+            self.refreshAutoCollapsePresentation(animated: true)
+        }
+        panelTransitionWorkItemByDisplayID[displayID] = workItem
+
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + BarLayoutConstants.panelCollapseAnimationDuration,
+            execute: workItem
+        )
+    }
+
+    private func cancelPanelTransition(for displayID: CGDirectDisplayID) {
+        panelTransitionWorkItemByDisplayID[displayID]?.cancel()
+        panelTransitionWorkItemByDisplayID[displayID] = nil
+        panelTransitionTargetCollapsedByDisplayID.removeValue(forKey: displayID)
     }
 
     private func postDisplayHeight(
