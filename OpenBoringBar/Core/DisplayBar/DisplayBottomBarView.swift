@@ -36,10 +36,11 @@ struct DisplayBottomBarView: View {
                 )
 
             HStack(spacing: 8) {
-                applicationLauncherButton
-
-                Divider()
-                    .padding(.vertical, 9)
+// Pseudo-requirement: users can already open the app they want with Command + Space, so we shouldn’t blindly copy BoringBar wholesale.
+//                applicationLauncherButton
+//
+//                Divider()
+//                    .padding(.vertical, 9)
 
                 Group {
                     if apps.isEmpty {
